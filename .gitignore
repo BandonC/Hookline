@@ -20,3 +20,6 @@ out/
 # Logs & misc
 *.log
 .DS_Store
+
+# Local working docs (not part of the shipped repo)
+ROADMAP.md
