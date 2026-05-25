@@ -52,7 +52,7 @@ events.post("/", async (c) => {
     stub
       .fetch("https://hookline.internal/poke", {
         method: "POST",
-        body: JSON.stringify({ eventId, dueAt: now }),
+        body: JSON.stringify({ eventId, endpointId, dueAt: now }),
       })
       .then((r) => {
         if (!r.ok) console.error("DO poke returned non-ok", eventId, r.status);
