@@ -16,10 +16,15 @@ export class EndpointDO {
   constructor(private state: DurableObjectState, private env: Env) {}
 
   // Poked by the ingestion API / reconciliation cron to schedule a due event.
+  // Step 1 establishes the call path: it only arms the alarm. The alarm()/
+  // deliver() loop is Step 2. eventId is unused here on purpose — alarm() loads
+  // due events from D1 (the source of truth), so the poke just sets the time.
   async fetch(req: Request): Promise<Response> {
-    // TODO: read { eventId, dueAt } from the request.
-    //   getAlarm(); if none or dueAt is sooner, setAlarm(dueAt).
-    //   Re-poking with an already-correct alarm must be a no-op (idempotent).
+    const { dueAt } = await req.json<{ eventId: string; dueAt: number }>();
+    const current = await this.state.storage.getAlarm();
+    if (current === null || dueAt < current) {
+      await this.state.storage.setAlarm(dueAt);
+    }
     return new Response(null, { status: 202 });
   }
 
