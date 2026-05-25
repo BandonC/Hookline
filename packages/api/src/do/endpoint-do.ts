@@ -1,8 +1,9 @@
 import { drizzle } from "drizzle-orm/d1";
 import { and, asc, eq, isNotNull, lte } from "drizzle-orm";
 import { nanoid } from "nanoid";
-import { endpoints, events, deliveryAttempts } from "@hookline/db";
+import { endpoints, events, deliveryAttempts, deadLetters } from "@hookline/db";
 import type { Endpoint, Event } from "@hookline/db";
+import { computeBackoff } from "../backoff";
 
 const MAX_ATTEMPTS = 6;
 const REQUEST_TIMEOUT_MS = 10_000;
@@ -71,8 +72,8 @@ export class EndpointDO {
     }
 
     // Re-arm to the soonest still-scheduled pending event, if any remain.
-    // Delivered events are no longer pending; failed events were parked with a
-    // null next_attempt_at (Step 2 has no backoff), so neither is picked up here.
+    // Delivered and dead-lettered events are no longer pending; retried events
+    // stay pending with a future next_attempt_at, so this re-arm picks them up.
     const [next] = await db
       .select({ nextAttemptAt: events.nextAttemptAt })
       .from(events)
@@ -91,10 +92,11 @@ export class EndpointDO {
     }
   }
 
-  // The one method where Invariants 3 and 4 live. Step 2 POSTs UNSIGNED —
-  // HMAC signing (Invariant 2) is wired in Step 4; backoff / dead-lettering
-  // (Invariant 1) is Step 3. The failure branch here parks the event (clears
-  // next_attempt_at, stays pending); Step 3 replaces that with the retry write.
+  // The one method where Invariants 1, 3 and 4 live. Still POSTs UNSIGNED —
+  // HMAC signing (Invariant 2) is wired in Step 4. On failure it decides: under
+  // MAX_ATTEMPTS → schedule a retry on the decorrelated-jitter curve (Inv. 1);
+  // at MAX_ATTEMPTS → mark failed + dead-letter, never a silent drop. Each branch
+  // writes exactly one attempt row in a single batch (Inv. 3).
   private async deliver(
     db: ReturnType<typeof drizzle>,
     event: Event,
@@ -124,25 +126,61 @@ export class EndpointDO {
 
     const delivered = statusCode !== null && statusCode >= 200 && statusCode < 300;
 
-    // [Inv. 3] exactly one attempt row + the event mutation, in ONE batch.
+    // [Inv. 3] The attempt row is always the first statement; the event mutation
+    // (and, on exhaustion, the dead-letter insert) ride in the SAME batch.
+    const attemptInsert = db.insert(deliveryAttempts).values({
+      id: `att_${nanoid()}`,
+      eventId: event.id,
+      attemptNumber,
+      statusCode,
+      responseSnippet: snippet,
+      latencyMs,
+    });
+
+    if (delivered) {
+      await db.batch([
+        attemptInsert,
+        db
+          .update(events)
+          .set({ status: "delivered", nextAttemptAt: null })
+          .where(eq(events.id, event.id)),
+      ]);
+      return;
+    }
+
+    if (attemptNumber >= MAX_ATTEMPTS) {
+      // Retries exhausted: mark failed, clear the schedule, and dead-letter in
+      // one batch. Never a silent drop (Invariant 1 / project invariant 1).
+      // final_error stays bounded: last status code, or the network error name
+      // — never the payload or a receiver response body.
+      const finalError =
+        statusCode !== null ? `HTTP ${statusCode}` : (snippet ?? "fetch failed");
+      await db.batch([
+        attemptInsert,
+        db
+          .update(events)
+          .set({ status: "failed", nextAttemptAt: null, attemptCount: attemptNumber })
+          .where(eq(events.id, event.id)),
+        db.insert(deadLetters).values({ eventId: event.id, finalError }),
+      ]);
+      return;
+    }
+
+    // Failed, under max: schedule the next attempt on the decorrelated-jitter
+    // curve (Invariant 1). lastDelayMs is the stateful `prev`; persisting it lets
+    // the next retry continue the random walk. alarm()'s existing re-arm picks
+    // this up — the event stays pending with a future next_attempt_at.
+    const delay = Math.round(computeBackoff(event.lastDelayMs));
     await db.batch([
-      db.insert(deliveryAttempts).values({
-        id: `att_${nanoid()}`,
-        eventId: event.id,
-        attemptNumber,
-        statusCode,
-        responseSnippet: snippet,
-        latencyMs,
-      }),
-      delivered
-        ? db
-            .update(events)
-            .set({ status: "delivered", nextAttemptAt: null })
-            .where(eq(events.id, event.id))
-        : db
-            .update(events)
-            .set({ nextAttemptAt: null }) // park: stay pending, unscheduled (Step 3 adds backoff)
-            .where(eq(events.id, event.id)),
+      attemptInsert,
+      db
+        .update(events)
+        .set({
+          attemptCount: attemptNumber,
+          nextAttemptAt: new Date(Date.now() + delay),
+          lastDelayMs: delay,
+        })
+        .where(eq(events.id, event.id)),
     ]);
   }
 }

@@ -6,10 +6,15 @@
 const BASE_MS = 1_000;       // 1s floor
 const CAP_MS = 3_600_000;    // 1h ceiling
 
-export function computeBackoff(previousDelayMs: number): number {
-  // TODO: implement decorrelated jitter:
-  //   lower = BASE_MS
-  //   upper = max(BASE_MS, previousDelayMs * 3)
-  //   return min(CAP_MS, lower + random * (upper - lower))
-  throw new Error("computeBackoff not implemented");
+// `previousDelayMs` is the actual delay used last time (the stateful part of
+// decorrelated jitter); null on the first retry, where we seed from BASE_MS.
+// `rng` is injectable so tests can seed it; defaults to Math.random.
+export function computeBackoff(
+  previousDelayMs: number | null,
+  rng: () => number = Math.random,
+): number {
+  const lower = BASE_MS;
+  const upper = Math.max(BASE_MS, (previousDelayMs ?? BASE_MS) * 3);
+  const delay = lower + rng() * (upper - lower);
+  return Math.min(CAP_MS, delay);
 }

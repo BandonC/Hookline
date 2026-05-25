@@ -8,7 +8,8 @@
     "deploy": "wrangler deploy",
     "db:migrate:local": "wrangler d1 migrations apply hookline-db --local",
     "db:migrate:remote": "wrangler d1 migrations apply hookline-db --remote",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run"
   },
   "dependencies": {
     "@hookline/db": "*",
@@ -18,6 +19,7 @@
   "devDependencies": {
     "@cloudflare/workers-types": "^4.20241106.0",
     "typescript": "^5.6.0",
+    "vitest": "^4.1.7",
     "wrangler": "^4.94.0"
   }
 }

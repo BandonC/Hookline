@@ -19,6 +19,7 @@ export const events = sqliteTable("events", {
     .notNull().default("pending"),
   attemptCount: integer("attempt_count").notNull().default(0),
   nextAttemptAt: integer("next_attempt_at", { mode: "timestamp_ms" }), // null = not scheduled
+  lastDelayMs: integer("last_delay_ms"), // prev decorrelated-jitter delay; null until first retry computed
   createdAt: integer("created_at", { mode: "timestamp_ms" })
     .notNull().default(sql`(unixepoch() * 1000)`),
 }, (t) => ({

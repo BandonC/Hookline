@@ -1,0 +1,1 @@
+ALTER TABLE `events` ADD `last_delay_ms` integer;
