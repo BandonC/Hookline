@@ -1,0 +1,20 @@
+{
+  "name": "hookline",
+  "private": true,
+  "version": "0.1.0",
+  "description": "Reliable webhook delivery service. Cloudflare-native, TypeScript end-to-end.",
+  "workspaces": [
+    "packages/*"
+  ],
+  "scripts": {
+    "dev:api": "npm run dev -w @hookline/api",
+    "dev:dashboard": "npm run dev -w @hookline/dashboard",
+    "deploy:api": "npm run deploy -w @hookline/api",
+    "db:generate": "npm run db:generate -w @hookline/db",
+    "db:migrate:local": "npm run db:migrate:local -w @hookline/api",
+    "db:migrate:remote": "npm run db:migrate:remote -w @hookline/api"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}

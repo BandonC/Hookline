@@ -1,0 +1,23 @@
+{
+  "name": "@hookline/api",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy",
+    "db:migrate:local": "wrangler d1 migrations apply hookline-db --local",
+    "db:migrate:remote": "wrangler d1 migrations apply hookline-db --remote",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@hookline/db": "*",
+    "hono": "^4.6.0",
+    "nanoid": "^5.0.0"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "^4.20241106.0",
+    "typescript": "^5.6.0",
+    "wrangler": "^4.94.0"
+  }
+}

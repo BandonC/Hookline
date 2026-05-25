@@ -1,0 +1,15 @@
+# ─────────────────────────────────────────────────────────────
+# packages/api/.dev.vars — LOCAL Worker secrets for `wrangler dev`.
+# Copy to `.dev.vars` (gitignored). For production, set each with:
+#   wrangler secret put <NAME>
+# Bindings (DB, ENDPOINT_DO) are NOT here — they live in wrangler.toml.
+# ─────────────────────────────────────────────────────────────
+
+# Admin key protecting the /v1/endpoints CRUD routes (you choose to add this
+# in phase 1). Any caller managing endpoints must present it. Generate a
+# random value, e.g.  openssl rand -hex 32
+ADMIN_API_KEY=local-dev-admin-key-change-me
+
+# NOTE: there is intentionally NO global signing secret here. Each endpoint's
+# HMAC signing secret is generated at runtime and stored in D1 (see
+# packages/api/src/do/CLAUDE.md). Do not add one.
