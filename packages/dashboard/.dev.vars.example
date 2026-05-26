@@ -1,0 +1,7 @@
+# packages/dashboard/.dev.vars — LOCAL dashboard vars for `next dev` (via
+# @opennextjs/cloudflare). Copy to `.dev.vars` (gitignored).
+#
+# Selects which Next.js .env files load locally. Bindings (DB) come from
+# wrangler.jsonc, not here. There is no signing secret here — the dashboard
+# never reads it.
+NEXTJS_ENV=development

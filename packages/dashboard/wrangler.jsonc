@@ -1,0 +1,21 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "hookline-dashboard",
+  "main": ".open-next/worker.js",
+  "compatibility_date": "2024-12-30",
+  "compatibility_flags": ["nodejs_compat", "global_fetch_strictly_public"],
+  "assets": {
+    "directory": ".open-next/assets",
+    "binding": "ASSETS"
+  },
+  // Read-only access to the SAME D1 the API Worker writes to. D1 is the single
+  // source of truth (HOOKLINE invariant 3); the dashboard is just another reader.
+  // No migrations_dir on purpose — the API package owns the schema + migrations.
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "hookline-db",
+      "database_id": "368382b0-2191-4b64-abcc-88d4d7a990b1"
+    }
+  ]
+}

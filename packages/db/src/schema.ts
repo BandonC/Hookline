@@ -47,3 +47,4 @@ export const deadLetters = sqliteTable("dead_letters", {
 export type Endpoint = typeof endpoints.$inferSelect;
 export type Event = typeof events.$inferSelect;
 export type DeliveryAttempt = typeof deliveryAttempts.$inferSelect;
+export type DeadLetter = typeof deadLetters.$inferSelect;

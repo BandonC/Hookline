@@ -1,0 +1,194 @@
+.header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0 24px;
+  height: 56px;
+  border-bottom: 1px solid var(--border);
+  background: var(--surface);
+}
+.brand {
+  font-weight: 700;
+  font-size: 16px;
+  color: var(--fg);
+}
+.brand:hover {
+  text-decoration: none;
+}
+.nav {
+  display: flex;
+  align-items: center;
+  gap: 20px;
+}
+
+.toggle {
+  border: 1px solid var(--border);
+  background: var(--bg);
+  color: var(--fg);
+  border-radius: 6px;
+  width: 32px;
+  height: 32px;
+  cursor: pointer;
+  font-size: 15px;
+  line-height: 1;
+}
+.toggle:hover {
+  border-color: var(--muted);
+}
+
+.container {
+  max-width: 1040px;
+  margin: 0 auto;
+  padding: 28px 24px 64px;
+}
+
+.section {
+  margin-bottom: 36px;
+}
+.h2 {
+  font-size: 13px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--muted);
+  margin: 0 0 12px;
+}
+
+.card {
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--surface);
+  overflow: hidden;
+}
+
+.table {
+  width: 100%;
+  border-collapse: collapse;
+}
+.table th {
+  text-align: left;
+  font-weight: 600;
+  font-size: 12px;
+  color: var(--muted);
+  padding: 10px 14px;
+  border-bottom: 1px solid var(--border);
+  white-space: nowrap;
+}
+.table td {
+  padding: 11px 14px;
+  border-bottom: 1px solid var(--border);
+  vertical-align: top;
+}
+.table tbody tr:last-child td {
+  border-bottom: none;
+}
+.table tbody tr:hover {
+  background: var(--bg);
+}
+
+.mono {
+  font-family: var(--mono);
+  font-size: 12.5px;
+}
+.muted {
+  color: var(--muted);
+}
+.empty {
+  color: var(--muted);
+  padding: 8px 2px;
+}
+.back {
+  margin: 0 0 20px;
+}
+
+.badge {
+  display: inline-block;
+  padding: 2px 8px;
+  border-radius: 999px;
+  font-size: 12px;
+  font-weight: 600;
+  text-transform: capitalize;
+}
+.badgePending {
+  background: var(--warn-bg);
+  color: var(--warn-fg);
+}
+.badgeDelivered {
+  background: var(--ok-bg);
+  color: var(--ok-fg);
+}
+.badgeFailed {
+  background: var(--err-bg);
+  color: var(--err-fg);
+}
+
+.metaGrid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  gap: 16px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--surface);
+  padding: 18px;
+}
+.metaGrid > div > span {
+  display: block;
+  font-size: 12px;
+  margin-bottom: 3px;
+}
+
+.snippet {
+  max-width: 360px;
+}
+.snippet code {
+  font-family: var(--mono);
+  font-size: 12px;
+  word-break: break-word;
+  white-space: pre-wrap;
+}
+
+.h1 {
+  font-size: 20px;
+  font-weight: 700;
+  margin: 0 0 24px;
+}
+
+/* Section label on the left, a muted at-a-glance count on the right. */
+.sectionHead {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 16px;
+  margin: 0 0 12px;
+}
+.sectionHead .h2 {
+  margin: 0;
+}
+.count {
+  font-size: 12px;
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+/* Long values (URLs, ids) stay on one line; the full value is in the title. */
+.truncate {
+  display: inline-block;
+  max-width: 280px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  vertical-align: bottom;
+}
+
+/* Right-align numeric columns (header included) for easy scanning. */
+.table th.num,
+.table td.num {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
+/* A non-zero pending count is the thing you're scanning for — make it read. */
+.hot {
+  color: var(--warn-fg);
+  font-weight: 600;
+}

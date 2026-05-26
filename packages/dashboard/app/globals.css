@@ -1,0 +1,76 @@
+:root {
+  color-scheme: light dark;
+
+  --bg: #fafafa;
+  --surface: #ffffff;
+  --border: #e5e7eb;
+  --fg: #18181b;
+  --muted: #71717a;
+  --link: #2563eb;
+
+  --ok-bg: #dcfce7;
+  --ok-fg: #166534;
+  --warn-bg: #fef9c3;
+  --warn-fg: #854d0e;
+  --err-bg: #fee2e2;
+  --err-fg: #991b1b;
+
+  --mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+}
+
+/* Explicit dark choice. */
+:root[data-theme="dark"] {
+  --bg: #0b0b0e;
+  --surface: #16161a;
+  --border: #2a2a31;
+  --fg: #e7e7ea;
+  --muted: #8b8b94;
+  --link: #6ea8fe;
+
+  --ok-bg: #14321f;
+  --ok-fg: #86efac;
+  --warn-bg: #3a300f;
+  --warn-fg: #fde047;
+  --err-bg: #3a1515;
+  --err-fg: #fca5a5;
+}
+
+/* System preference, unless the user explicitly chose light. */
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #0b0b0e;
+    --surface: #16161a;
+    --border: #2a2a31;
+    --fg: #e7e7ea;
+    --muted: #8b8b94;
+    --link: #6ea8fe;
+
+    --ok-bg: #14321f;
+    --ok-fg: #86efac;
+    --warn-bg: #3a300f;
+    --warn-fg: #fde047;
+    --err-bg: #3a1515;
+    --err-fg: #fca5a5;
+  }
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--fg);
+  font-family: system-ui, -apple-system, sans-serif;
+  font-size: 14px;
+  line-height: 1.5;
+}
+
+a {
+  color: var(--link);
+  text-decoration: none;
+}
+a:hover {
+  text-decoration: underline;
+}
