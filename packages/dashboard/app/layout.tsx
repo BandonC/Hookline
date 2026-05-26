@@ -2,6 +2,7 @@ import type { Metadata } from "next";
 import Link from "next/link";
 import Script from "next/script";
 import { ThemeToggle } from "./components/ThemeToggle";
+import { NavLink } from "./components/NavLink";
 import styles from "./components/ui.module.css";
 import "./globals.css";
 
@@ -29,7 +30,8 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
             Hookline
           </Link>
           <nav className={styles.nav}>
-            <Link href="/dead-letters">Dead letters</Link>
+            <NavLink href="/" label="Overview" />
+            <NavLink href="/dead-letters" label="Dead letters" />
             <ThemeToggle />
           </nav>
         </header>

@@ -18,38 +18,41 @@ export default async function DeadLetters() {
         <p className={styles.empty}>No dead-lettered events.</p>
       ) : (
         <div className={styles.card}>
-          <table className={styles.table}>
-            <thead>
-              <tr>
-                <th>Event</th>
-                <th>Endpoint</th>
-                <th>Final error</th>
-                <th>Failed at</th>
-              </tr>
-            </thead>
-            <tbody>
-              {rows.map((d) => (
-                <tr key={d.eventId}>
-                  <td>
-                    <Link
-                      className={`${styles.mono} ${styles.truncate}`}
-                      title={d.eventId}
-                      href={`/events/${d.eventId}`}
-                    >
-                      {d.eventId}
-                    </Link>
-                  </td>
-                  <td>
-                    <span className={`${styles.mono} ${styles.truncate}`} title={d.endpointId}>
-                      {d.endpointId}
-                    </span>
-                  </td>
-                  <td>{d.finalError ?? <span className={styles.muted}>—</span>}</td>
-                  <td className={styles.muted}>{fmtTime(d.failedAt)}</td>
+          <div className={styles.tableScroll}>
+            <table className={styles.table}>
+              <caption className={styles.srOnly}>Dead-lettered events</caption>
+              <thead>
+                <tr>
+                  <th>Event</th>
+                  <th>Endpoint</th>
+                  <th>Final error</th>
+                  <th>Failed at</th>
                 </tr>
-              ))}
-            </tbody>
-          </table>
+              </thead>
+              <tbody>
+                {rows.map((d) => (
+                  <tr key={d.eventId}>
+                    <td>
+                      <Link
+                        className={`${styles.mono} ${styles.truncate}`}
+                        title={d.eventId}
+                        href={`/events/${d.eventId}`}
+                      >
+                        {d.eventId}
+                      </Link>
+                    </td>
+                    <td>
+                      <span className={`${styles.mono} ${styles.truncate}`} title={d.endpointId}>
+                        {d.endpointId}
+                      </span>
+                    </td>
+                    <td>{d.finalError ?? <span className={styles.muted}>—</span>}</td>
+                    <td className={styles.muted}>{fmtTime(d.failedAt)}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
         </div>
       )}
     </section>

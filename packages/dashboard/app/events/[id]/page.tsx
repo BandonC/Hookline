@@ -57,40 +57,54 @@ export default async function EventDetail({ params }: { params: Promise<{ id: st
           <p className={styles.empty}>No attempts recorded yet.</p>
         ) : (
           <div className={styles.card}>
-            <table className={styles.table}>
-              <thead>
-                <tr>
-                  <th className={styles.num}>#</th>
-                  <th>Status code</th>
-                  <th className={styles.num}>Latency</th>
-                  <th>Response snippet</th>
-                  <th>At</th>
-                </tr>
-              </thead>
-              <tbody>
-                {attempts.map((a) => (
-                  <tr key={a.id}>
-                    <td className={styles.num}>{a.attemptNumber}</td>
-                    <td>{a.statusCode ?? <span className={styles.muted}>network error</span>}</td>
-                    <td className={styles.num}>
-                      {a.latencyMs != null ? (
-                        `${a.latencyMs} ms`
-                      ) : (
-                        <span className={styles.muted}>—</span>
-                      )}
-                    </td>
-                    <td className={styles.snippet}>
-                      {a.responseSnippet ? (
-                        <code>{a.responseSnippet}</code>
-                      ) : (
-                        <span className={styles.muted}>—</span>
-                      )}
-                    </td>
-                    <td className={styles.muted}>{fmtTime(a.attemptedAt)}</td>
+            <div className={styles.tableScroll}>
+              <table className={styles.table}>
+                <caption className={styles.srOnly}>Delivery attempts for {event.id}</caption>
+                <thead>
+                  <tr>
+                    <th className={styles.num}>#</th>
+                    <th>Status code</th>
+                    <th className={styles.num}>Latency</th>
+                    <th>Response snippet</th>
+                    <th>At</th>
                   </tr>
-                ))}
-              </tbody>
-            </table>
+                </thead>
+                <tbody>
+                  {attempts.map((a) => {
+                    const ok = a.statusCode != null && a.statusCode >= 200 && a.statusCode < 300;
+                    return (
+                      <tr key={a.id}>
+                        <td className={styles.num}>{a.attemptNumber}</td>
+                        <td>
+                          {a.statusCode != null ? (
+                            <span className={ok ? styles.codeOk : styles.codeErr}>
+                              {a.statusCode}
+                            </span>
+                          ) : (
+                            <span className={styles.muted}>network error</span>
+                          )}
+                        </td>
+                        <td className={styles.num}>
+                          {a.latencyMs != null ? (
+                            `${a.latencyMs} ms`
+                          ) : (
+                            <span className={styles.muted}>—</span>
+                          )}
+                        </td>
+                        <td className={styles.snippet}>
+                          {a.responseSnippet ? (
+                            <code>{a.responseSnippet}</code>
+                          ) : (
+                            <span className={styles.muted}>—</span>
+                          )}
+                        </td>
+                        <td className={styles.muted}>{fmtTime(a.attemptedAt)}</td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
           </div>
         )}
       </section>

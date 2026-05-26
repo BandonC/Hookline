@@ -6,6 +6,11 @@ import styles from "./components/ui.module.css";
 
 export const dynamic = "force-dynamic";
 
+const rowTint: Partial<Record<string, string>> = {
+  failed: styles.rowFailed,
+  pending: styles.rowPending,
+};
+
 export default async function Home() {
   const [endpoints, evts, counts] = await Promise.all([
     listEndpoints(),
@@ -26,42 +31,45 @@ export default async function Home() {
           <p className={styles.empty}>No endpoints registered.</p>
         ) : (
           <div className={styles.card}>
-            <table className={styles.table}>
-              <thead>
-                <tr>
-                  <th>ID</th>
-                  <th>URL</th>
-                  <th>Description</th>
-                  <th className={styles.num}>Pending</th>
-                  <th>Created</th>
-                </tr>
-              </thead>
-              <tbody>
-                {endpoints.map((e) => (
-                  <tr key={e.id}>
-                    <td>
-                      <span className={`${styles.mono} ${styles.truncate}`} title={e.id}>
-                        {e.id}
-                      </span>
-                    </td>
-                    <td>
-                      <span className={`${styles.mono} ${styles.truncate}`} title={e.url}>
-                        {e.url}
-                      </span>
-                    </td>
-                    <td>{e.description ?? <span className={styles.muted}>—</span>}</td>
-                    <td className={styles.num}>
-                      {e.pending > 0 ? (
-                        <span className={styles.hot}>{e.pending}</span>
-                      ) : (
-                        <span className={styles.muted}>0</span>
-                      )}
-                    </td>
-                    <td className={styles.muted}>{fmtTime(e.createdAt)}</td>
+            <div className={styles.tableScroll}>
+              <table className={styles.table}>
+                <caption className={styles.srOnly}>Registered endpoints</caption>
+                <thead>
+                  <tr>
+                    <th>ID</th>
+                    <th>URL</th>
+                    <th>Description</th>
+                    <th className={styles.num}>Pending</th>
+                    <th>Created</th>
                   </tr>
-                ))}
-              </tbody>
-            </table>
+                </thead>
+                <tbody>
+                  {endpoints.map((e) => (
+                    <tr key={e.id}>
+                      <td>
+                        <span className={`${styles.mono} ${styles.truncate}`} title={e.id}>
+                          {e.id}
+                        </span>
+                      </td>
+                      <td>
+                        <span className={`${styles.mono} ${styles.truncate}`} title={e.url}>
+                          {e.url}
+                        </span>
+                      </td>
+                      <td>{e.description ?? <span className={styles.muted}>—</span>}</td>
+                      <td className={styles.num}>
+                        {e.pending > 0 ? (
+                          <span className={styles.hot}>{e.pending}</span>
+                        ) : (
+                          <span className={styles.muted}>0</span>
+                        )}
+                      </td>
+                      <td className={styles.muted}>{fmtTime(e.createdAt)}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
           </div>
         )}
       </section>
@@ -77,44 +85,47 @@ export default async function Home() {
           <p className={styles.empty}>No events yet.</p>
         ) : (
           <div className={styles.card}>
-            <table className={styles.table}>
-              <thead>
-                <tr>
-                  <th>Event</th>
-                  <th>Endpoint</th>
-                  <th>Status</th>
-                  <th className={styles.num}>Attempts</th>
-                  <th>Next attempt</th>
-                  <th>Created</th>
-                </tr>
-              </thead>
-              <tbody>
-                {evts.map((e) => (
-                  <tr key={e.id}>
-                    <td>
-                      <Link
-                        className={`${styles.mono} ${styles.truncate}`}
-                        title={e.id}
-                        href={`/events/${e.id}`}
-                      >
-                        {e.id}
-                      </Link>
-                    </td>
-                    <td>
-                      <span className={`${styles.mono} ${styles.truncate}`} title={e.endpointId}>
-                        {e.endpointId}
-                      </span>
-                    </td>
-                    <td>
-                      <StatusBadge status={e.status} />
-                    </td>
-                    <td className={styles.num}>{e.attemptCount}</td>
-                    <td className={styles.muted}>{fmtTime(e.nextAttemptAt)}</td>
-                    <td className={styles.muted}>{fmtTime(e.createdAt)}</td>
+            <div className={styles.tableScroll}>
+              <table className={styles.table}>
+                <caption className={styles.srOnly}>Recent deliveries</caption>
+                <thead>
+                  <tr>
+                    <th>Event</th>
+                    <th>Endpoint</th>
+                    <th>Status</th>
+                    <th className={styles.num}>Attempts</th>
+                    <th>Next attempt</th>
+                    <th>Created</th>
                   </tr>
-                ))}
-              </tbody>
-            </table>
+                </thead>
+                <tbody>
+                  {evts.map((e) => (
+                    <tr key={e.id} className={rowTint[e.status]}>
+                      <td>
+                        <Link
+                          className={`${styles.mono} ${styles.truncate}`}
+                          title={e.id}
+                          href={`/events/${e.id}`}
+                        >
+                          {e.id}
+                        </Link>
+                      </td>
+                      <td>
+                        <span className={`${styles.mono} ${styles.truncate}`} title={e.endpointId}>
+                          {e.endpointId}
+                        </span>
+                      </td>
+                      <td>
+                        <StatusBadge status={e.status} />
+                      </td>
+                      <td className={styles.num}>{e.attemptCount}</td>
+                      <td className={styles.muted}>{fmtTime(e.nextAttemptAt)}</td>
+                      <td className={styles.muted}>{fmtTime(e.createdAt)}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
           </div>
         )}
       </section>

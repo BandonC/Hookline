@@ -15,6 +15,10 @@
   --err-bg: #fee2e2;
   --err-fg: #991b1b;
 
+  /* Faint row tints — subtler than the badge backgrounds. */
+  --warn-tint: #fffbeb;
+  --err-tint: #fef2f2;
+
   --mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
 }
 
@@ -33,6 +37,9 @@
   --warn-fg: #fde047;
   --err-bg: #3a1515;
   --err-fg: #fca5a5;
+
+  --warn-tint: #211c0a;
+  --err-tint: #241314;
 }
 
 /* System preference, unless the user explicitly chose light. */
@@ -51,6 +58,9 @@
     --warn-fg: #fde047;
     --err-bg: #3a1515;
     --err-fg: #fca5a5;
+
+    --warn-tint: #211c0a;
+    --err-tint: #241314;
   }
 }
 

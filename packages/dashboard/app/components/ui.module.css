@@ -192,3 +192,46 @@
   color: var(--warn-fg);
   font-weight: 600;
 }
+
+/* Tables scroll sideways on narrow viewports instead of breaking the layout. */
+.tableScroll {
+  overflow-x: auto;
+}
+
+/* Surface the rows that need attention. Defined after the :hover rule so the
+   tint persists while hovering a failed/pending row. */
+.table tbody tr.rowFailed {
+  background: var(--err-tint);
+}
+.table tbody tr.rowPending {
+  background: var(--warn-tint);
+}
+
+/* Status codes in attempt history: 2xx reads as success, everything else as error. */
+.codeOk {
+  color: var(--ok-fg);
+  font-weight: 600;
+}
+.codeErr {
+  color: var(--err-fg);
+  font-weight: 600;
+}
+
+/* Current page in the nav. */
+.navActive {
+  color: var(--fg);
+  font-weight: 600;
+}
+
+/* Visually hidden, still read by screen readers (for table <caption>s). */
+.srOnly {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
