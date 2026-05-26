@@ -4,6 +4,7 @@ import { nanoid } from "nanoid";
 import { endpoints, events, deliveryAttempts, deadLetters } from "@hookline/db";
 import type { Endpoint, Event } from "@hookline/db";
 import { computeBackoff } from "../backoff";
+import { signPayload } from "../signing";
 
 const MAX_ATTEMPTS = 6;
 const REQUEST_TIMEOUT_MS = 10_000;
@@ -68,7 +69,7 @@ export class EndpointDO {
       );
 
     for (const event of due) {
-      await this.deliver(db, event, endpoint);
+      await deliver(db, event, endpoint);
     }
 
     // Re-arm to the soonest still-scheduled pending event, if any remain.
@@ -92,97 +93,116 @@ export class EndpointDO {
     }
   }
 
-  // The one method where Invariants 1, 3 and 4 live. Still POSTs UNSIGNED —
-  // HMAC signing (Invariant 2) is wired in Step 4. On failure it decides: under
-  // MAX_ATTEMPTS → schedule a retry on the decorrelated-jitter curve (Inv. 1);
-  // at MAX_ATTEMPTS → mark failed + dead-letter, never a silent drop. Each branch
-  // writes exactly one attempt row in a single batch (Inv. 3).
-  private async deliver(
-    db: ReturnType<typeof drizzle>,
-    event: Event,
-    endpoint: Endpoint,
-  ): Promise<void> {
-    const rawBody = JSON.stringify(event.payload);
-    const attemptNumber = event.attemptCount + 1;
+}
 
-    let statusCode: number | null = null;
-    let snippet: string | null = null;
-    const start = Date.now();
-    try {
-      const res = await fetch(endpoint.url, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: rawBody,
-        signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
-      });
-      statusCode = res.status;
-      snippet = await readCapped(res, RESPONSE_SNIPPET_CAP); // [Inv. 4]
-    } catch (err) {
-      // Timeout or network error: the receiver gave us no status. Record the
-      // error name only — never the payload or a receiver response body.
-      snippet = err instanceof Error ? err.name : "fetch failed";
-    }
-    const latencyMs = Date.now() - start;
+// The one place Invariants 1, 2, 3 and 4 meet. Signs the envelope and POSTs it
+// (Inv. 2); on failure decides: under MAX_ATTEMPTS → retry on the decorrelated-
+// jitter curve (Inv. 1); at MAX_ATTEMPTS → mark failed + dead-letter, never a
+// silent drop. Each branch writes exactly one attempt row in one batch (Inv. 3).
+// It touches no DO state — pure (db, event, endpoint) → effects — which is why
+// it lives at module scope and is unit-tested directly rather than through the DO.
+export async function deliver(
+  db: ReturnType<typeof drizzle>,
+  event: Event,
+  endpoint: Endpoint,
+): Promise<void> {
+  // [Inv. 2/5] Sign an envelope that carries the event id, so the id is inside
+  // the signed body — not merely an unsigned header. signPayload signs
+  // `${timestamp}.${rawBody}`; we compute rawBody once and POST those exact
+  // bytes, so what we signed is byte-for-byte what the receiver verifies.
+  const rawBody = JSON.stringify({ id: event.id, payload: event.payload });
+  const attemptNumber = event.attemptCount + 1;
 
-    const delivered = statusCode !== null && statusCode >= 200 && statusCode < 300;
+  // Fresh per attempt (unix seconds, the Stripe construction): a retry re-signs
+  // with a new timestamp, so the receiver's replay window is measured from the
+  // actual send, not the original ingestion.
+  const timestamp = Math.floor(Date.now() / 1000);
+  const signature = await signPayload(endpoint.signingSecret, rawBody, timestamp);
 
-    // [Inv. 3] The attempt row is always the first statement; the event mutation
-    // (and, on exhaustion, the dead-letter insert) ride in the SAME batch.
-    const attemptInsert = db.insert(deliveryAttempts).values({
-      id: `att_${nanoid()}`,
-      eventId: event.id,
-      attemptNumber,
-      statusCode,
-      responseSnippet: snippet,
-      latencyMs,
+  let statusCode: number | null = null;
+  let snippet: string | null = null;
+  const start = Date.now();
+  try {
+    const res = await fetch(endpoint.url, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "X-Hookline-Timestamp": String(timestamp),
+        "X-Hookline-Signature": signature,
+        // Convenience only. Authority is the id inside the signed body, never
+        // this header (Invariant 2) — don't let a receiver trust it for identity.
+        "X-Hookline-Event-Id": event.id,
+      },
+      body: rawBody,
+      signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
     });
+    statusCode = res.status;
+    snippet = await readCapped(res, RESPONSE_SNIPPET_CAP); // [Inv. 4]
+  } catch (err) {
+    // Timeout or network error: the receiver gave us no status. Record the
+    // error name only — never the payload or a receiver response body.
+    snippet = err instanceof Error ? err.name : "fetch failed";
+  }
+  const latencyMs = Date.now() - start;
 
-    if (delivered) {
-      await db.batch([
-        attemptInsert,
-        db
-          .update(events)
-          .set({ status: "delivered", nextAttemptAt: null })
-          .where(eq(events.id, event.id)),
-      ]);
-      return;
-    }
+  const delivered = statusCode !== null && statusCode >= 200 && statusCode < 300;
 
-    if (attemptNumber >= MAX_ATTEMPTS) {
-      // Retries exhausted: mark failed, clear the schedule, and dead-letter in
-      // one batch. Never a silent drop (Invariant 1 / project invariant 1).
-      // final_error stays bounded: last status code, or the network error name
-      // — never the payload or a receiver response body.
-      const finalError =
-        statusCode !== null ? `HTTP ${statusCode}` : (snippet ?? "fetch failed");
-      await db.batch([
-        attemptInsert,
-        db
-          .update(events)
-          .set({ status: "failed", nextAttemptAt: null, attemptCount: attemptNumber })
-          .where(eq(events.id, event.id)),
-        db.insert(deadLetters).values({ eventId: event.id, finalError }),
-      ]);
-      return;
-    }
+  // [Inv. 3] The attempt row is always the first statement; the event mutation
+  // (and, on exhaustion, the dead-letter insert) ride in the SAME batch.
+  const attemptInsert = db.insert(deliveryAttempts).values({
+    id: `att_${nanoid()}`,
+    eventId: event.id,
+    attemptNumber,
+    statusCode,
+    responseSnippet: snippet,
+    latencyMs,
+  });
 
-    // Failed, under max: schedule the next attempt on the decorrelated-jitter
-    // curve (Invariant 1). lastDelayMs is the stateful `prev`; persisting it lets
-    // the next retry continue the random walk. alarm()'s existing re-arm picks
-    // this up — the event stays pending with a future next_attempt_at.
-    const delay = Math.round(computeBackoff(event.lastDelayMs));
+  if (delivered) {
     await db.batch([
       attemptInsert,
       db
         .update(events)
-        .set({
-          attemptCount: attemptNumber,
-          nextAttemptAt: new Date(Date.now() + delay),
-          lastDelayMs: delay,
-        })
+        .set({ status: "delivered", nextAttemptAt: null })
         .where(eq(events.id, event.id)),
     ]);
+    return;
   }
+
+  if (attemptNumber >= MAX_ATTEMPTS) {
+    // Retries exhausted: mark failed, clear the schedule, and dead-letter in
+    // one batch. Never a silent drop (Invariant 1 / project invariant 1).
+    // final_error stays bounded: last status code, or the network error name
+    // — never the payload or a receiver response body.
+    const finalError =
+      statusCode !== null ? `HTTP ${statusCode}` : (snippet ?? "fetch failed");
+    await db.batch([
+      attemptInsert,
+      db
+        .update(events)
+        .set({ status: "failed", nextAttemptAt: null, attemptCount: attemptNumber })
+        .where(eq(events.id, event.id)),
+      db.insert(deadLetters).values({ eventId: event.id, finalError }),
+    ]);
+    return;
+  }
+
+  // Failed, under max: schedule the next attempt on the decorrelated-jitter
+  // curve (Invariant 1). lastDelayMs is the stateful `prev`; persisting it lets
+  // the next retry continue the random walk. alarm()'s existing re-arm picks
+  // this up — the event stays pending with a future next_attempt_at.
+  const delay = Math.round(computeBackoff(event.lastDelayMs));
+  await db.batch([
+    attemptInsert,
+    db
+      .update(events)
+      .set({
+        attemptCount: attemptNumber,
+        nextAttemptAt: new Date(Date.now() + delay),
+        lastDelayMs: delay,
+      })
+      .where(eq(events.id, event.id)),
+  ]);
 }
 
 // Invariant 4: read at most `cap` bytes, then stop and cancel. Never buffer the

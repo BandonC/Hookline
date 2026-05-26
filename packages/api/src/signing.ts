@@ -7,9 +7,20 @@ export async function signPayload(
   rawBody: string,
   timestamp: number,
 ): Promise<string> {
-  // TODO:
-  //   import HMAC-SHA256 key from `secret` via crypto.subtle.importKey
-  //   sign `${timestamp}.${rawBody}`
-  //   hex-encode the result, return `v1=${hex}`
-  throw new Error("signPayload not implemented");
+  const key = await crypto.subtle.importKey(
+    "raw",
+    new TextEncoder().encode(secret),
+    { name: "HMAC", hash: "SHA-256" },
+    false,
+    ["sign"],
+  );
+  const mac = await crypto.subtle.sign(
+    "HMAC",
+    key,
+    new TextEncoder().encode(`${timestamp}.${rawBody}`),
+  );
+  const hex = [...new Uint8Array(mac)]
+    .map((b) => b.toString(16).padStart(2, "0"))
+    .join("");
+  return `v1=${hex}`;
 }
