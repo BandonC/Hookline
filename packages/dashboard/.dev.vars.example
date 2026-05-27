@@ -5,3 +5,9 @@
 # wrangler.jsonc, not here. There is no signing secret here — the dashboard
 # never reads it.
 NEXTJS_ENV=development
+
+# HTTP Basic Auth credential gating the dashboard (see middleware.ts). Format is
+# `user:password` — the whole string is compared. In production this is set with
+# `wrangler secret put DASHBOARD_BASIC_AUTH` on the hookline-dashboard Worker;
+# locally it loads from .dev.vars. Use ASCII; pick a long, random password.
+DASHBOARD_BASIC_AUTH=admin:local-dev-change-me
