@@ -1,0 +1,73 @@
+name: CI
+
+# PRs to main run checks only. Pushes to main (i.e. a merged PR) re-run the
+# checks and then deploy both Workers. Merging is the deploy approval — see
+# ROADMAP step 6 / the deploy decisions in this repo's setup.
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  checks:
+    name: Checks (typecheck · test · build)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+
+      # --- api Worker ---
+      - name: API typecheck
+        run: npm run typecheck -w @hookline/api
+      - name: API tests
+        run: npm test -w @hookline/api
+      # Bundles the Worker without uploading — fails the PR if it won't build.
+      # No Cloudflare credentials needed for a dry run.
+      - name: API bundle check
+        run: npm exec -w @hookline/api -- wrangler deploy --dry-run
+
+      # --- dashboard Worker ---
+      # Full OpenNext build (next build --webpack + OpenNext bundling). Catches
+      # build/bundle breakage before merge. No credentials needed to build.
+      - name: Dashboard build
+        run: npm exec -w @hookline/dashboard -- opennextjs-cloudflare build
+
+  deploy:
+    name: Deploy (migrate → api → dashboard)
+    needs: checks
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    # Serialize deploys so two quick merges can't race on the same Workers.
+    concurrency:
+      group: deploy-${{ github.ref }}
+      cancel-in-progress: false
+    env:
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+
+      # Schema first: idempotent (Wrangler tracks applied migrations), so this
+      # is a no-op when nothing is new. Must precede the deploys.
+      - name: Apply remote D1 migrations
+        run: npm run db:migrate:remote
+
+      # api carries the DO migration + cron with its deploy.
+      - name: Deploy API Worker
+        run: npm run deploy:api
+
+      - name: Deploy dashboard Worker
+        run: npm run deploy -w @hookline/dashboard
