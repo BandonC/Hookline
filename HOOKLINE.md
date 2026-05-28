@@ -116,10 +116,15 @@ breaking, per-endpoint rate limiting. Documented as planned; not built.
 All four v2 features live on the same per-endpoint Durable Objects v1 already uses, so
 v2 adds zero infrastructure and zero cost.
 
-- **Ordered delivery (centerpiece)** — opt-in `ordered` flag. The endpoint's DO
-  serializes delivery to one in-flight at a time, surfacing head-of-line blocking and
-  the ordering-vs-throughput tradeoff. Consistent hashing pins an endpoint's events to a
-  stable partition.
+- **Ordered delivery (centerpiece)** — opt-in `ordered` flag per endpoint, plus an
+  `ordering_key` carried on each event. Events sharing `(endpoint, ordering_key)` deliver
+  serialized in `created_at` order, one in-flight; different keys deliver in parallel.
+  **Consistent hashing maps `(endpoint, ordering_key) → one of K sub-DOs**, so same-key
+  events land on the same partition — the algorithm is load-bearing here, not decorative.
+  Head-of-line blocking is **per-key**: a stuck event blocks only its own key's queue,
+  dead-letters on retry exhaustion (the existing at-least-once path), then the queue
+  advances; other keys keep flowing. The exposed tradeoff: per-key throughput is capped at
+  one in-flight delivery — chatty keys cap there, the rest of the endpoint doesn't.
 - **Fair scheduling** — deficit / weighted round-robin across tenants plus per-tenant
   credits, so one noisy tenant can't starve others.
 - **Per-endpoint rate limiting** — token bucket / sliding window on outbound delivery so
@@ -152,7 +157,7 @@ Each algorithm is present because the domain requires it.
 | Algorithm | Phase | Why |
 | --- | --- | --- |
 | Decorrelated jitter backoff | v1 | Spreads retries to a recovering endpoint; avoids thundering herd. |
-| Consistent hashing | v2 | Pins an endpoint's events to a stable partition for ordered delivery. |
+| Consistent hashing | v2 | Maps `(endpoint, ordering_key) → sub-DO` so same-key events stay on the same partition for ordered delivery. |
 | Deficit / weighted round-robin | v2 | Fair scheduling across tenants. |
 | Token bucket / sliding window | v2 | Per-endpoint outbound rate limiting. |
 | Circuit-breaker state machine | v2 | Rolling-window failure tracking to stop hammering failing endpoints. |
