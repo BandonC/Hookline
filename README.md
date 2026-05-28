@@ -133,7 +133,12 @@ and dedupe on the event ID (delivery is at-least-once).
 A read-only view of endpoints, recent deliveries, per-event attempt history, and dead-lettered
 events. It's gated by HTTP Basic Auth and never surfaces signing secrets.
 
-![Hookline dashboard](./docs/dashboard.png)
+![Hookline dashboard — Overview](./docs/dashboard-overview.png)
+
+The Dead Letters page surfaces events that exhausted retries — at-least-once means they
+land here rather than being silently dropped.
+
+![Dead letters page](./docs/dashboard-dead-letters.png)
 
 ## Deployment
 
