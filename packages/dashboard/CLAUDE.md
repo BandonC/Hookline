@@ -1,6 +1,6 @@
 # CLAUDE.md — packages/dashboard
 
-The read-only observability UI. Next.js on Cloudflare Pages. Lists endpoints, recent
+The read-only observability UI. Next.js on Cloudflare Workers (via OpenNext). Lists endpoints, recent
 deliveries, per-event attempt history, and dead-lettered events.
 
 Inherits all root rules. Scope-specific rules below.

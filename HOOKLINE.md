@@ -66,7 +66,7 @@ Three logical components, all on Cloudflare:
    attempt, and on failure re-arms its own alarm with backoff. This is the in-house
    scheduler that replaces a managed queue.
 
-3. **Dashboard** — Next.js on Cloudflare Pages. Read-only. Lists endpoints, recent
+3. **Dashboard** — Next.js on Cloudflare Workers (via OpenNext). Read-only. Lists endpoints, recent
    deliveries, per-event attempt history, and dead-lettered events.
 
 D1 (SQLite) via Drizzle ORM is the source of truth. The DO holds almost no state of its
@@ -138,11 +138,11 @@ Cloudflare-native, TypeScript end-to-end.
 | Relational store | Cloudflare D1 (SQLite) | 1–2 |
 | ORM | Drizzle | 1–2 |
 | Payload signing | HMAC-SHA256 (Web Crypto) | 1 |
-| Dashboard | Next.js on Cloudflare Pages | 1–2 |
+| Dashboard | Next.js (OpenNext) on Cloudflare Workers | 1–2 |
 | CI/CD | GitHub Actions | 1–2 |
 | Package mgmt | npm workspaces | 1–2 |
 
-**Cost: $0/month.** Workers, D1, Durable Objects (SQLite class), Pages, and Cron Triggers
+**Cost: $0/month.** Workers, D1, Durable Objects (SQLite class), Workers static assets, and Cron Triggers
 all sit within free tiers. No Workers Paid plan required.
 
 ## 9. Algorithmic components
