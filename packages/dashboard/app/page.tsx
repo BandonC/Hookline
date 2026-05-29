@@ -39,6 +39,7 @@ export default async function Home() {
                     <th>ID</th>
                     <th>URL</th>
                     <th>Description</th>
+                    <th>Ordered</th>
                     <th className={styles.num}>Pending</th>
                     <th>Created</th>
                   </tr>
@@ -57,6 +58,13 @@ export default async function Home() {
                         </span>
                       </td>
                       <td>{e.description ?? <span className={styles.muted}>—</span>}</td>
+                      <td>
+                        {e.ordered ? (
+                          <span className={`${styles.badge} ${styles.badgeOrdered}`}>Ordered</span>
+                        ) : (
+                          <span className={styles.muted}>—</span>
+                        )}
+                      </td>
                       <td className={styles.num}>
                         {e.pending > 0 ? (
                           <span className={styles.hot}>{e.pending}</span>

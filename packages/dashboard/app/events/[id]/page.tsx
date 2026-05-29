@@ -11,7 +11,7 @@ export default async function EventDetail({ params }: { params: Promise<{ id: st
   const { id } = await params;
   const data = await eventWithAttempts(id);
   if (!data) notFound();
-  const { event, attempts } = data;
+  const { event, attempts, blockedBy } = data;
 
   return (
     <>
@@ -43,6 +43,35 @@ export default async function EventDetail({ params }: { params: Promise<{ id: st
           <div>
             <span className={styles.muted}>Next attempt</span>
             <div>{fmtTime(event.nextAttemptAt)}</div>
+          </div>
+          <div>
+            <span className={styles.muted}>Ordering key</span>
+            <div>
+              {event.orderingKey !== null ? (
+                <span className={styles.mono}>{event.orderingKey}</span>
+              ) : (
+                <span className={styles.muted}>—</span>
+              )}
+            </div>
+          </div>
+          <div>
+            <span className={styles.muted}>Queue position</span>
+            <div>
+              {event.orderingKey === null ? (
+                <span className={styles.muted}>—</span>
+              ) : blockedBy !== null ? (
+                <>
+                  blocked behind{" "}
+                  <Link className={styles.mono} href={`/events/${blockedBy.id}`}>
+                    {blockedBy.id}
+                  </Link>
+                </>
+              ) : event.status === "pending" ? (
+                <span className={styles.muted}>head of queue</span>
+              ) : (
+                <span className={styles.muted}>—</span>
+              )}
+            </div>
           </div>
           <div>
             <span className={styles.muted}>Created</span>

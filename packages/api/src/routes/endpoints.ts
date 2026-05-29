@@ -5,7 +5,7 @@
 import { Hono } from "hono";
 import { HTTPException } from "hono/http-exception";
 import { drizzle } from "drizzle-orm/d1";
-import { eq } from "drizzle-orm";
+import { and, eq, isNull } from "drizzle-orm";
 import { nanoid } from "nanoid";
 import { endpoints as endpointsTable, events as eventsTable, type Endpoint } from "@hookline/db";
 import type { Bindings } from "../bindings";
@@ -53,6 +53,64 @@ endpoints.get("/:id", async (c) => {
     .limit(1);
   if (!row) throw new HTTPException(404, { message: "endpoint not found" });
   return c.json(toPublic(row));
+});
+
+// Toggle the `ordered` flag. Admin-only (inherited from the route-level
+// requireAdmin middleware), and API-only — the dashboard stays read-only.
+// Only `ordered` is patchable today; url/description/signing_secret are not.
+endpoints.patch("/:id", async (c) => {
+  const body = await c.req.json().catch(() => null);
+  if (body === null || typeof body !== "object" || Array.isArray(body)) {
+    throw new HTTPException(400, { message: "body must be a JSON object" });
+  }
+  if (typeof body.ordered !== "boolean") {
+    throw new HTTPException(400, { message: "ordered must be a boolean" });
+  }
+  const nextOrdered = body.ordered;
+
+  const id = c.req.param("id");
+  const db = drizzle(c.env.DB);
+
+  const [current] = await db
+    .select({ id: endpointsTable.id, ordered: endpointsTable.ordered })
+    .from(endpointsTable)
+    .where(eq(endpointsTable.id, id))
+    .limit(1);
+  if (!current) throw new HTTPException(404, { message: "endpoint not found" });
+
+  // Decision F: refuse `false → true` if there are pending events with no
+  // ordering_key on this endpoint. Those events live on the bare DO; flipping
+  // ordered would leave them as a category ingestion-time validation forbids
+  // creating, with no operator-visible recourse. The check is best-effort
+  // (D1 has no multi-statement transaction with the UPDATE below), but
+  // ingestion enforces the same rule, so a null-key event arriving in the
+  // race window is rejected at the edge — see routes/events.ts.
+  if (nextOrdered && !current.ordered) {
+    const [blocker] = await db
+      .select({ id: eventsTable.id })
+      .from(eventsTable)
+      .where(
+        and(
+          eq(eventsTable.endpointId, id),
+          eq(eventsTable.status, "pending"),
+          isNull(eventsTable.orderingKey),
+        ),
+      )
+      .limit(1);
+    if (blocker) {
+      throw new HTTPException(409, {
+        message: "endpoint has pending events without ordering_key; cannot enable ordered",
+      });
+    }
+  }
+
+  const [updated] = await db
+    .update(endpointsTable)
+    .set({ ordered: nextOrdered })
+    .where(eq(endpointsTable.id, id))
+    .returning(publicColumns);
+
+  return c.json(toPublic(updated));
 });
 
 endpoints.delete("/:id", async (c) => {

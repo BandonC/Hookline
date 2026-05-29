@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, afterEach } from "vitest";
 import { reconcile } from "./index";
+import { SHARDS_PER_ORDERED_ENDPOINT, computeShard } from "./sharding";
 
 // Frozen clock: reconcile() stamps `now` for the WHERE bound. The rows we feed
 // stand in for what that query returns — the SQL filter itself is exercised by
@@ -7,7 +8,12 @@ import { reconcile } from "./index";
 // integration test). Here we test reconcile's OWN logic: dedupe + poke shape.
 const NOW = new Date("2026-05-26T12:00:00Z").getTime();
 
-type DueRow = { id: string; endpointId: string; nextAttemptAt: Date | null };
+type DueRow = {
+  id: string;
+  endpointId: string;
+  orderingKey: string | null;
+  nextAttemptAt: Date | null;
+};
 
 // Mock D1 at the drizzle seam reconcile() uses: select().from().where()
 //   .orderBy().limit() resolves to the due rows. reconcile reads nothing else off
@@ -56,9 +62,9 @@ describe("reconcile", () => {
     const t2 = new Date(NOW - 10_000);
     const t3 = new Date(NOW - 20_000);
     const rows: DueRow[] = [
-      { id: "evt_a1", endpointId: "ep_a", nextAttemptAt: t1 },
-      { id: "evt_b1", endpointId: "ep_b", nextAttemptAt: t3 },
-      { id: "evt_a2", endpointId: "ep_a", nextAttemptAt: t2 },
+      { id: "evt_a1", endpointId: "ep_a", orderingKey: null, nextAttemptAt: t1 },
+      { id: "evt_b1", endpointId: "ep_b", orderingKey: null, nextAttemptAt: t3 },
+      { id: "evt_a2", endpointId: "ep_a", orderingKey: null, nextAttemptAt: t2 },
     ];
     const { namespace, idFromName, fetchMock, pokes } = makeEndpointDo();
 
@@ -80,7 +86,7 @@ describe("reconcile", () => {
     const { namespace, fetchMock, pokes } = makeEndpointDo();
 
     await reconcile(
-      makeDb([{ id: "evt_x", endpointId: "ep_x", nextAttemptAt: due }]),
+      makeDb([{ id: "evt_x", endpointId: "ep_x", orderingKey: null, nextAttemptAt: due }]),
       namespace,
     );
 
@@ -91,7 +97,86 @@ describe("reconcile", () => {
       eventId: "evt_x",
       endpointId: "ep_x",
       dueAt: due.getTime(),
+      shard: null,
     });
+  });
+
+  it("routes a keyed event to its sub-DO (endpointId#shard) and carries shard in the body", async () => {
+    vi.spyOn(Date, "now").mockReturnValue(NOW);
+    const due = new Date(NOW - 5_000);
+    const key = "user_42";
+    const shard = await computeShard(key);
+    const { namespace, idFromName, pokes } = makeEndpointDo();
+
+    await reconcile(
+      makeDb([{ id: "evt_k", endpointId: "ep_x", orderingKey: key, nextAttemptAt: due }]),
+      namespace,
+    );
+
+    expect(idFromName.mock.calls.map((c) => c[0])).toEqual([`ep_x#${shard}`]);
+    expect(pokes[0].body).toEqual({
+      eventId: "evt_k",
+      endpointId: "ep_x",
+      dueAt: due.getTime(),
+      shard,
+    });
+  });
+
+  it("groups by (endpoint, shard): same key → one poke, different keys → separate pokes", async () => {
+    vi.spyOn(Date, "now").mockReturnValue(NOW);
+    const due = new Date(NOW - 5_000);
+    const due2 = new Date(NOW - 4_000);
+
+    // Pick two keys with distinct shards so the routing assertion is real.
+    const keyA = "k_a";
+    const sA = await computeShard(keyA);
+    let keyB = "k_b";
+    let sB = await computeShard(keyB);
+    for (let i = 0; sB === sA && i < SHARDS_PER_ORDERED_ENDPOINT * 4; i++) {
+      keyB = `k_b_${i}`;
+      sB = await computeShard(keyB);
+    }
+    expect(sB).not.toBe(sA);
+
+    const { namespace, idFromName, pokes } = makeEndpointDo();
+
+    await reconcile(
+      makeDb([
+        // Two events on key A → same sub-DO, one poke (earliest dueAt wins).
+        { id: "evt_a1", endpointId: "ep_x", orderingKey: keyA, nextAttemptAt: due },
+        { id: "evt_a2", endpointId: "ep_x", orderingKey: keyA, nextAttemptAt: due2 },
+        // One event on key B → separate sub-DO, separate poke.
+        { id: "evt_b1", endpointId: "ep_x", orderingKey: keyB, nextAttemptAt: due },
+      ]),
+      namespace,
+    );
+
+    expect(idFromName.mock.calls.map((c) => c[0]).sort()).toEqual(
+      [`ep_x#${sA}`, `ep_x#${sB}`].sort(),
+    );
+    // Key A's poke carries the EARLIEST dueAt of its two events.
+    const aPoke = pokes.find((p) => p.body.eventId === "evt_a1")!;
+    expect(aPoke.body.dueAt).toBe(due.getTime());
+  });
+
+  it("mixed null-key + keyed events on the same endpoint poke both bare DO and sub-DOs", async () => {
+    vi.spyOn(Date, "now").mockReturnValue(NOW);
+    const due = new Date(NOW - 1_000);
+    const key = "user_xyz";
+    const shard = await computeShard(key);
+    const { namespace, idFromName } = makeEndpointDo();
+
+    await reconcile(
+      makeDb([
+        { id: "evt_null", endpointId: "ep_x", orderingKey: null, nextAttemptAt: due },
+        { id: "evt_keyed", endpointId: "ep_x", orderingKey: key, nextAttemptAt: due },
+      ]),
+      namespace,
+    );
+
+    expect(idFromName.mock.calls.map((c) => c[0]).sort()).toEqual(
+      ["ep_x", `ep_x#${shard}`].sort(),
+    );
   });
 
   it("does nothing when no events are due", async () => {

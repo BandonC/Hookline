@@ -20,10 +20,20 @@ export const events = sqliteTable("events", {
   attemptCount: integer("attempt_count").notNull().default(0),
   nextAttemptAt: integer("next_attempt_at", { mode: "timestamp_ms" }), // null = not scheduled
   lastDelayMs: integer("last_delay_ms"), // prev decorrelated-jitter delay; null until first retry computed
+  // v2 ordered delivery: nullable. Required-when-ordered is enforced at the
+  // ingestion API, not the DB, so flipping endpoints.ordered later doesn't
+  // retroactively invalidate historical rows.
+  orderingKey: text("ordering_key"),
   createdAt: integer("created_at", { mode: "timestamp_ms" })
     .notNull().default(sql`(unixepoch() * 1000)`),
 }, (t) => ({
   pendingDueIdx: index("pending_due_idx").on(t.status, t.nextAttemptAt),
+  // Per-key head query for ordered delivery: for a given (endpoint, key),
+  // find the oldest pending event by created_at. Sub-DO alarm() reads from
+  // this index; head waits on its own next_attempt_at without skipping.
+  orderedHeadIdx: index("ordered_head_idx").on(
+    t.endpointId, t.orderingKey, t.status, t.createdAt,
+  ),
 }));
 
 export const deliveryAttempts = sqliteTable("delivery_attempts", {

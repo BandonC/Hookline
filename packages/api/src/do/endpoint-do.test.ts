@@ -66,6 +66,7 @@ function makeEvent(overrides: Partial<Event> = {}): Event {
     attemptCount: 0,
     nextAttemptAt: new Date(NOW),
     lastDelayMs: null,
+    orderingKey: null,
     createdAt: new Date(NOW),
     ...overrides,
   };
