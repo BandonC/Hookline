@@ -15,6 +15,13 @@
       "when": 1779748489061,
       "tag": "0001_aromatic_nextwave",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "6",
+      "when": 1780022171932,
+      "tag": "0002_magical_spyke",
+      "breakpoints": true
     }
   ]
 }

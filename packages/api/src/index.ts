@@ -6,6 +6,7 @@ import { events as eventsTable } from "@hookline/db";
 import type { Bindings } from "./bindings";
 import { endpoints } from "./routes/endpoints";
 import { events } from "./routes/events";
+import { computeShard, endpointDoName } from "./sharding";
 
 // Per-run cap on the reconciliation scan. It's a backstop, not the primary path:
 // anything past-due beyond this is swept by the next run (see crons in
@@ -39,10 +40,13 @@ export async function reconcile(
 
   // Served by pending_due_idx on (status, next_attempt_at): equality on status,
   // range + ordering on next_attempt_at. Oldest-due first, capped per run.
+  // ordering_key is included so we can derive each row's owning sub-DO (Model
+  // C: routing reads the event row alone, never the endpoint flag).
   const due = await db
     .select({
       id: eventsTable.id,
       endpointId: eventsTable.endpointId,
+      orderingKey: eventsTable.orderingKey,
       nextAttemptAt: eventsTable.nextAttemptAt,
     })
     .from(eventsTable)
@@ -52,33 +56,43 @@ export async function reconcile(
     .orderBy(asc(eventsTable.nextAttemptAt))
     .limit(RECONCILE_LIMIT);
 
-  // One poke per endpoint: alarm() drains ALL of an endpoint's due events in a
-  // single run, so a poke per event would just be redundant subrequests. Rows
-  // are ordered oldest-first, so the first row seen for an endpoint carries its
-  // earliest due time.
-  const byEndpoint = new Map<string, { eventId: string; dueAt: number }>();
+  // One poke per (endpoint, shard) — i.e. per DO. alarm() drains everything
+  // that DO owns in a single run, so multiple pokes to the same DO would just
+  // be redundant subrequests. Rows are ordered oldest-first, so the first row
+  // seen for a given DO carries that DO's earliest due time. shard is null
+  // for null-key events (bare DO) and a number for keyed events (sub-DO).
+  type Poke = { eventId: string; endpointId: string; shard: number | null; dueAt: number };
+  const byDo = new Map<string, Poke>();
   for (const row of due) {
     // next_attempt_at is non-null on these rows (the WHERE excludes NULLs); the
     // check also narrows Date | null -> Date for getTime().
-    if (row.nextAttemptAt === null || byEndpoint.has(row.endpointId)) continue;
-    byEndpoint.set(row.endpointId, { eventId: row.id, dueAt: row.nextAttemptAt.getTime() });
+    if (row.nextAttemptAt === null) continue;
+    const shard = row.orderingKey === null ? null : await computeShard(row.orderingKey);
+    const doName = endpointDoName(row.endpointId, shard);
+    if (byDo.has(doName)) continue;
+    byDo.set(doName, {
+      eventId: row.id,
+      endpointId: row.endpointId,
+      shard,
+      dueAt: row.nextAttemptAt.getTime(),
+    });
   }
 
   // Re-poke with the EXACT shape ingestion uses (routes/events.ts). The DO arms
   // its alarm to the soonest due time and only ever moves it earlier, so poking
   // a DO whose alarm is already correct is a no-op — that's what makes this
   // backstop idempotent. Don't log payloads.
-  const pokes = [...byEndpoint].map(([endpointId, { eventId, dueAt }]) => {
-    const stub = endpointDo.get(endpointDo.idFromName(endpointId));
+  const pokes = [...byDo].map(([doName, { eventId, endpointId, shard, dueAt }]) => {
+    const stub = endpointDo.get(endpointDo.idFromName(doName));
     return stub
       .fetch("https://hookline.internal/poke", {
         method: "POST",
-        body: JSON.stringify({ eventId, endpointId, dueAt }),
+        body: JSON.stringify({ eventId, endpointId, dueAt, shard }),
       })
       .then((r) => {
-        if (!r.ok) console.error("reconcile poke non-ok", endpointId, r.status);
+        if (!r.ok) console.error("reconcile poke non-ok", doName, r.status);
       })
-      .catch((err) => console.error("reconcile poke failed", endpointId, err));
+      .catch((err) => console.error("reconcile poke failed", doName, err));
   });
 
   await Promise.all(pokes);

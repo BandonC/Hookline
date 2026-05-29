@@ -1,4 +1,4 @@
-import { asc, count, desc, eq } from "drizzle-orm";
+import { and, asc, count, desc, eq } from "drizzle-orm";
 import { endpoints, events, deliveryAttempts, deadLetters } from "@hookline/db";
 import { getDb } from "./db";
 
@@ -52,6 +52,7 @@ export async function eventWithAttempts(id: string) {
       status: events.status,
       attemptCount: events.attemptCount,
       nextAttemptAt: events.nextAttemptAt,
+      orderingKey: events.orderingKey,
       createdAt: events.createdAt,
     })
     .from(events)
@@ -65,7 +66,28 @@ export async function eventWithAttempts(id: string) {
     .where(eq(deliveryAttempts.eventId, id))
     .orderBy(asc(deliveryAttempts.attemptNumber));
 
-  return { event, attempts };
+  // For pending ordered events, surface "this isn't the head of its
+  // (endpoint, key) queue" so it's clear when waiting is per-key HOLB and
+  // not just a scheduled retry. Served by ordered_head_idx
+  // (endpoint_id, ordering_key, status, created_at).
+  let blockedBy: { id: string } | null = null;
+  if (event.orderingKey !== null && event.status === "pending") {
+    const [head] = await db
+      .select({ id: events.id })
+      .from(events)
+      .where(
+        and(
+          eq(events.endpointId, event.endpointId),
+          eq(events.orderingKey, event.orderingKey),
+          eq(events.status, "pending"),
+        ),
+      )
+      .orderBy(asc(events.createdAt))
+      .limit(1);
+    if (head && head.id !== event.id) blockedBy = { id: head.id };
+  }
+
+  return { event, attempts, blockedBy };
 }
 
 export async function eventCounts() {

@@ -1,10 +1,11 @@
 import { drizzle } from "drizzle-orm/d1";
-import { and, asc, eq, isNotNull, lte } from "drizzle-orm";
+import { and, asc, eq, isNotNull, isNull, lte } from "drizzle-orm";
 import { nanoid } from "nanoid";
 import { endpoints, events, deliveryAttempts, deadLetters } from "@hookline/db";
 import type { Endpoint, Event } from "@hookline/db";
 import { computeBackoff } from "../backoff";
 import { signPayload } from "../signing";
+import { computeShard } from "../sharding";
 
 const MAX_ATTEMPTS = 6;
 const REQUEST_TIMEOUT_MS = 10_000;
@@ -19,19 +20,33 @@ export class EndpointDO {
   constructor(private state: DurableObjectState, private env: Env) {}
 
   // Poked by the ingestion API / reconciliation cron to schedule a due event.
-  // The poke carries this endpoint's id; we persist it so alarm() can scope its
-  // D1 query to this endpoint (idFromName is one-way — the DO can't recover the
-  // id from state.id). eventId is unused on purpose: alarm() loads due events
-  // from D1 (the source of truth), so the poke just sets the time.
+  // The poke carries this endpoint's id and (for sub-DOs) the shard; we persist
+  // both so alarm() can scope its D1 query — idFromName is one-way, so the DO
+  // can't recover its name from state.id. eventId is unused on purpose:
+  // alarm() loads due events from D1 (the source of truth) so the poke just
+  // sets the time.
+  //
+  // shard is the routing tag (Model C): null = bare DO that owns all events
+  // on this endpoint with ordering_key IS NULL; number = sub-DO that owns
+  // events whose ordering_key hashes to that shard. The DO's identity is
+  // fixed at first poke and never changes — sub-DO names and bare-DO names
+  // address different DOs, so a given DO only ever receives pokes for one.
   async fetch(req: Request): Promise<Response> {
-    const { endpointId, dueAt } = await req.json<{
+    const { endpointId, dueAt, shard } = await req.json<{
       eventId: string;
       endpointId: string;
       dueAt: number;
+      shard?: number | null;
     }>();
-    // Idempotent and self-healing: every poke re-asserts the id. The only thing
-    // that arms the alarm is this method, so alarm() can never fire without it.
+    // Idempotent and self-healing: every poke re-asserts identity. The only
+    // thing that arms the alarm is this method, so alarm() can never fire
+    // without it.
     await this.state.storage.put("endpointId", endpointId);
+    if (typeof shard === "number") {
+      await this.state.storage.put("shard", shard);
+    } else {
+      await this.state.storage.delete("shard");
+    }
     const current = await this.state.storage.getAlarm();
     if (current === null || dueAt < current) {
       await this.state.storage.setAlarm(dueAt);
@@ -41,11 +56,19 @@ export class EndpointDO {
 
   // Fires when the soonest scheduled delivery is due. Safe to run twice: the
   // platform may retry alarm() if it throws. Idempotency comes from reloading
-  // due `pending` events from D1 on every run — anything already delivered (or
-  // parked with a null next_attempt_at) is no longer due, so it isn't reloaded.
+  // pending events from D1 on every run — anything already delivered is no
+  // longer pending, so it isn't reloaded.
+  //
+  // Two paths, chosen by the DO's identity (Model C — see ../sharding.ts):
+  //   - Bare DO (shard=undefined): drain ALL due events whose ordering_key
+  //     IS NULL. Parallel within the endpoint, no per-key serialization.
+  //   - Sub-DO  (shard=number)  : for each ordering_key this shard owns,
+  //     deliver ONLY the head (oldest by created_at). Younger same-key events
+  //     wait — strict per-key serialization, head-of-line blocking is per-key.
   async alarm(): Promise<void> {
     const endpointId = await this.state.storage.get<string>("endpointId");
     if (!endpointId) return; // armed without a poke that stored the id — nothing to scope to
+    const shard = await this.state.storage.get<number>("shard");
 
     const db = drizzle(this.env.DB);
 
@@ -56,43 +79,135 @@ export class EndpointDO {
       .limit(1);
     if (!endpoint) return; // endpoint deleted out from under us — nothing to deliver
 
-    const now = Date.now();
-    const due = await db
-      .select()
-      .from(events)
-      .where(
-        and(
-          eq(events.endpointId, endpointId),
-          eq(events.status, "pending"),
-          lte(events.nextAttemptAt, new Date(now)),
-        ),
-      );
-
-    for (const event of due) {
-      await deliver(db, event, endpoint);
-    }
-
-    // Re-arm to the soonest still-scheduled pending event, if any remain.
-    // Delivered and dead-lettered events are no longer pending; retried events
-    // stay pending with a future next_attempt_at, so this re-arm picks them up.
-    const [next] = await db
-      .select({ nextAttemptAt: events.nextAttemptAt })
-      .from(events)
-      .where(
-        and(
-          eq(events.endpointId, endpointId),
-          eq(events.status, "pending"),
-          isNotNull(events.nextAttemptAt),
-        ),
-      )
-      .orderBy(asc(events.nextAttemptAt))
-      .limit(1);
-
-    if (next?.nextAttemptAt) {
-      await this.state.storage.setAlarm(next.nextAttemptAt.getTime());
+    if (typeof shard === "number") {
+      await alarmOrdered(db, endpoint, shard, this.state.storage);
+    } else {
+      await alarmUnordered(db, endpoint, this.state.storage);
     }
   }
+}
 
+// Bare DO path. Drains every null-key pending event for this endpoint whose
+// time has come. The `ordering_key IS NULL` filter is what keeps the bare DO
+// from racing with sub-DOs on the same endpoint (Model C invariant): null-key
+// events live here, non-null-key events live on sub-DOs.
+async function alarmUnordered(
+  db: ReturnType<typeof drizzle>,
+  endpoint: Endpoint,
+  storage: DurableObjectState["storage"],
+): Promise<void> {
+  const now = Date.now();
+  const due = await db
+    .select()
+    .from(events)
+    .where(
+      and(
+        eq(events.endpointId, endpoint.id),
+        isNull(events.orderingKey),
+        eq(events.status, "pending"),
+        lte(events.nextAttemptAt, new Date(now)),
+      ),
+    );
+
+  for (const event of due) {
+    await deliver(db, event, endpoint);
+  }
+
+  // Re-arm to the soonest still-scheduled null-key pending event.
+  const [next] = await db
+    .select({ nextAttemptAt: events.nextAttemptAt })
+    .from(events)
+    .where(
+      and(
+        eq(events.endpointId, endpoint.id),
+        isNull(events.orderingKey),
+        eq(events.status, "pending"),
+        isNotNull(events.nextAttemptAt),
+      ),
+    )
+    .orderBy(asc(events.nextAttemptAt))
+    .limit(1);
+
+  if (next?.nextAttemptAt) {
+    await storage.setAlarm(next.nextAttemptAt.getTime());
+  }
+}
+
+// Sub-DO path. For each ordering_key on this endpoint that hashes to our shard,
+// deliver only the head (oldest by created_at) — and only if its next_attempt_at
+// is due. Younger events in the same key wait; we never skip a retrying head.
+// This is what makes head-of-line blocking strictly per-key.
+//
+// We load all non-null-key pending events for the endpoint and filter to our
+// shard in code (SQLite can't compute SHA-256 in-query). At v1 scale this is
+// bounded by the endpoint's pending queue depth; if it ever becomes a hot
+// path, the next move is to denormalize `shard` onto events and index it —
+// don't pre-build that.
+//
+// Within a sub-DO, owned-key deliveries run sequentially. Different keys on
+// different sub-DOs run in parallel by virtue of being different DOs. Same-
+// shard different-key deliveries serialize at the sub-DO; that's the known
+// cost of finite K, not a correctness issue.
+async function alarmOrdered(
+  db: ReturnType<typeof drizzle>,
+  endpoint: Endpoint,
+  shard: number,
+  storage: DurableObjectState["storage"],
+): Promise<void> {
+  const now = Date.now();
+
+  for (const head of await ownedHeads(db, endpoint.id, shard)) {
+    if (!head.nextAttemptAt) continue; // pending implies scheduled; defensive
+    if (head.nextAttemptAt.getTime() > now) continue; // head not yet due — wait, don't skip
+    await deliver(db, head, endpoint);
+  }
+
+  // Re-arm to the soonest still-pending owned head. Deliveries above may have
+  // marked heads delivered/failed, advanced keys to a new head, or pushed the
+  // same head's next_attempt_at into the future — so we re-query.
+  let soonest: number | null = null;
+  for (const head of await ownedHeads(db, endpoint.id, shard)) {
+    if (!head.nextAttemptAt) continue;
+    const t = head.nextAttemptAt.getTime();
+    soonest = soonest === null ? t : Math.min(soonest, t);
+  }
+  if (soonest !== null) {
+    await storage.setAlarm(soonest);
+  }
+}
+
+// Per-key heads owned by `shard` on this endpoint. The first row per key in a
+// created_at-ordered scan IS that key's head, so we group as we iterate.
+// Exported for tests — this is the function HOLB correctness rides on.
+export async function ownedHeads(
+  db: ReturnType<typeof drizzle>,
+  endpointId: string,
+  shard: number,
+): Promise<Event[]> {
+  const pending = await db
+    .select()
+    .from(events)
+    .where(
+      and(
+        eq(events.endpointId, endpointId),
+        isNotNull(events.orderingKey),
+        eq(events.status, "pending"),
+      ),
+    )
+    .orderBy(asc(events.createdAt));
+
+  const heads = new Map<string, Event>();
+  for (const e of pending) {
+    const key = e.orderingKey!;
+    if (heads.has(key)) continue;
+    heads.set(key, e);
+  }
+
+  const owned: Event[] = [];
+  for (const [key, head] of heads) {
+    if ((await computeShard(key)) === shard) owned.push(head);
+  }
+  return owned;
 }
 
 // The one place Invariants 1, 2, 3 and 4 meet. Signs the envelope and POSTs it

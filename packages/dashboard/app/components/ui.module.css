@@ -120,6 +120,11 @@
   background: var(--err-bg);
   color: var(--err-fg);
 }
+.badgeOrdered {
+  background: var(--bg);
+  color: var(--fg);
+  border: 1px solid var(--border);
+}
 
 .metaGrid {
   display: grid;
