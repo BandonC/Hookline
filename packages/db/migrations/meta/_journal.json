@@ -36,6 +36,13 @@
       "when": 1780176386510,
       "tag": "0004_dry_hiroim",
       "breakpoints": true
+    },
+    {
+      "idx": 5,
+      "version": "6",
+      "when": 1780348642473,
+      "tag": "0005_fancy_sharon_ventura",
+      "breakpoints": true
     }
   ]
 }

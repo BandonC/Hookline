@@ -11,6 +11,34 @@ const rowTint: Partial<Record<string, string>> = {
   pending: styles.rowPending,
 };
 
+// One badge per breaker disposition. State and timer are server-rendered;
+// no client-side countdown — the page is dynamic so a refresh reflects state.
+function BreakerCell({
+  enabled,
+  state,
+  openUntil,
+}: {
+  enabled: boolean;
+  state: "closed" | "open" | "half_open";
+  openUntil: Date | null;
+}) {
+  if (!enabled) return <span className={styles.muted}>—</span>;
+  if (state === "closed") {
+    return <span className={`${styles.badge} ${styles.badgeDelivered}`}>OK</span>;
+  }
+  if (state === "half_open") {
+    return <span className={`${styles.badge} ${styles.badgeThrottled}`}>Half-open</span>;
+  }
+  // state === "open"
+  const remainingSec =
+    openUntil !== null ? Math.max(0, Math.ceil((openUntil.getTime() - Date.now()) / 1000)) : null;
+  return (
+    <span className={`${styles.badge} ${styles.badgeFailed}`}>
+      Open{remainingSec !== null ? ` (${remainingSec}s)` : ""}
+    </span>
+  );
+}
+
 export default async function Home() {
   const [endpoints, evts, counts] = await Promise.all([
     listEndpoints(),
@@ -41,6 +69,7 @@ export default async function Home() {
                     <th>Description</th>
                     <th>Ordered</th>
                     <th>Rate limit</th>
+                    <th>Breaker</th>
                     <th className={styles.num}>Pending</th>
                     <th>Created</th>
                   </tr>
@@ -74,6 +103,13 @@ export default async function Home() {
                         ) : (
                           <span className={styles.muted}>—</span>
                         )}
+                      </td>
+                      <td>
+                        <BreakerCell
+                          enabled={e.circuitBreakerEnabled}
+                          state={e.breakerState}
+                          openUntil={e.breakerOpenUntil}
+                        />
                       </td>
                       <td className={styles.num}>
                         {e.pending > 0 ? (

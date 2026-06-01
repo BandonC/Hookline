@@ -40,6 +40,12 @@ export default async function EventDetail({ params }: { params: Promise<{ id: st
                   <span className={`${styles.badge} ${styles.badgeThrottled}`}>throttled</span>
                 </>
               ) : null}
+              {event.status === "pending" && event.lastDeferReason === "breaker_open" ? (
+                <>
+                  {" "}
+                  <span className={`${styles.badge} ${styles.badgeFailed}`}>breaker open</span>
+                </>
+              ) : null}
             </div>
           </div>
           <div>

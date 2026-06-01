@@ -12,6 +12,9 @@ const publicEndpointColumns = {
   ordered: endpoints.ordered,
   rateLimitRps: endpoints.rateLimitRps,
   rateLimitBurst: endpoints.rateLimitBurst,
+  circuitBreakerEnabled: endpoints.circuitBreakerEnabled,
+  breakerState: endpoints.breakerState,
+  breakerOpenUntil: endpoints.breakerOpenUntil,
   createdAt: endpoints.createdAt,
 } as const;
 

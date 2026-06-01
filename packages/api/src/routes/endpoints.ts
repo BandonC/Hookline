@@ -56,14 +56,23 @@ endpoints.get("/:id", async (c) => {
 });
 
 // Partial update. Admin-only (inherited from the route-level requireAdmin
-// middleware), and API-only — the dashboard stays read-only. Three fields
-// are patchable: `ordered`, and the rate-limit pair `rate_limit_rps` +
-// `rate_limit_burst`. url/description/signing_secret are not.
+// middleware), and API-only — the dashboard stays read-only. Patchable
+// fields: `ordered`, the rate-limit pair `rate_limit_rps` + `rate_limit_burst`,
+// and the breaker triplet `circuit_breaker_enabled` + `breaker_open_sec` +
+// `breaker_threshold_pct`. url/description/signing_secret are not.
 //
 // Semantics (Q6, iii): standard PATCH merge with explicit-null-to-clear.
 // Absent fields are untouched. The rate-limit pair is all-or-nothing per
 // call — present together (both ints in bounds, or both null to clear), or
-// not at all. Half-pair is a 400.
+// not at all. Half-pair is a 400. The breaker tunables are independent
+// nullables (each has a code default if null) — set individually.
+//
+// Breaker state reset: whenever `circuit_breaker_enabled` is present in the
+// body (true or false), the runtime state columns (state/opened_at/open_until)
+// are reset to closed/null/null in the same UPDATE. This way toggling the
+// flag never leaves stale "open" state to ambush a future re-enable. The
+// gate also short-circuits when enabled=false, so a stale state column can
+// never be acted on, but the reset is the cleaner contract.
 endpoints.patch("/:id", async (c) => {
   const body = await c.req.json().catch(() => null);
   if (body === null || typeof body !== "object" || Array.isArray(body)) {
@@ -81,8 +90,9 @@ endpoints.patch("/:id", async (c) => {
   }
 
   const rateConfig = parseRateConfigPatch(bodyObj);
+  const breakerConfig = parseBreakerConfigPatch(bodyObj);
 
-  if (!hasOrdered && rateConfig === undefined) {
+  if (!hasOrdered && rateConfig === undefined && breakerConfig === undefined) {
     throw new HTTPException(400, { message: "no recognized fields to update" });
   }
 
@@ -127,6 +137,23 @@ endpoints.patch("/:id", async (c) => {
   if (rateConfig !== undefined) {
     updates.rateLimitRps = rateConfig.rateLimitRps;
     updates.rateLimitBurst = rateConfig.rateLimitBurst;
+  }
+  if (breakerConfig !== undefined) {
+    if (breakerConfig.circuitBreakerEnabled !== undefined) {
+      updates.circuitBreakerEnabled = breakerConfig.circuitBreakerEnabled;
+      // Reset runtime state whenever the intent flag is touched: toggling
+      // never leaves stale open/half-open state behind. See the route doc
+      // comment above.
+      updates.breakerState = "closed";
+      updates.breakerOpenedAt = null;
+      updates.breakerOpenUntil = null;
+    }
+    if (breakerConfig.breakerOpenSec !== undefined) {
+      updates.breakerOpenSec = breakerConfig.breakerOpenSec;
+    }
+    if (breakerConfig.breakerThresholdPct !== undefined) {
+      updates.breakerThresholdPct = breakerConfig.breakerThresholdPct;
+    }
   }
 
   const [updated] = await db
@@ -215,6 +242,76 @@ export function parseRateConfigPatch(body: Record<string, unknown>): RateConfigP
   return { rateLimitRps: rps as number, rateLimitBurst: burst as number };
 }
 
+// Bounds for the breaker tunables. open_sec matches the backoff cap (1h);
+// 1s is silly but legal, same pattern as the rate-limit bounds. threshold_pct
+// floor of 1 — 0% would mean "always tripped," which is never the right
+// state.
+const BREAKER_OPEN_SEC_MIN = 1;
+const BREAKER_OPEN_SEC_MAX = 3600;
+const BREAKER_THRESHOLD_PCT_MIN = 1;
+const BREAKER_THRESHOLD_PCT_MAX = 100;
+
+// Each field independent and optional: present → validate and apply,
+// null → clear (use the code default at gate time), absent → untouched.
+// Returns undefined when no breaker field is present (no config change),
+// or an object whose `undefined` keys are "not present in body."
+export type BreakerConfigPatch = {
+  circuitBreakerEnabled: boolean | undefined;
+  breakerOpenSec: number | null | undefined;
+  breakerThresholdPct: number | null | undefined;
+};
+
+export function parseBreakerConfigPatch(
+  body: Record<string, unknown>,
+): BreakerConfigPatch | undefined {
+  const hasEnabled = "circuit_breaker_enabled" in body;
+  const hasOpenSec = "breaker_open_sec" in body;
+  const hasThreshold = "breaker_threshold_pct" in body;
+  if (!hasEnabled && !hasOpenSec && !hasThreshold) return undefined;
+
+  let circuitBreakerEnabled: boolean | undefined;
+  if (hasEnabled) {
+    if (typeof body.circuit_breaker_enabled !== "boolean") {
+      throw new HTTPException(400, {
+        message: "circuit_breaker_enabled must be a boolean",
+      });
+    }
+    circuitBreakerEnabled = body.circuit_breaker_enabled;
+  }
+
+  let breakerOpenSec: number | null | undefined;
+  if (hasOpenSec) {
+    const v = body.breaker_open_sec;
+    if (v === null) breakerOpenSec = null;
+    else if (
+      !Number.isInteger(v) ||
+      (v as number) < BREAKER_OPEN_SEC_MIN ||
+      (v as number) > BREAKER_OPEN_SEC_MAX
+    ) {
+      throw new HTTPException(400, {
+        message: `breaker_open_sec must be an integer in [${BREAKER_OPEN_SEC_MIN}, ${BREAKER_OPEN_SEC_MAX}] or null`,
+      });
+    } else breakerOpenSec = v as number;
+  }
+
+  let breakerThresholdPct: number | null | undefined;
+  if (hasThreshold) {
+    const v = body.breaker_threshold_pct;
+    if (v === null) breakerThresholdPct = null;
+    else if (
+      !Number.isInteger(v) ||
+      (v as number) < BREAKER_THRESHOLD_PCT_MIN ||
+      (v as number) > BREAKER_THRESHOLD_PCT_MAX
+    ) {
+      throw new HTTPException(400, {
+        message: `breaker_threshold_pct must be an integer in [${BREAKER_THRESHOLD_PCT_MIN}, ${BREAKER_THRESHOLD_PCT_MAX}] or null`,
+      });
+    } else breakerThresholdPct = v as number;
+  }
+
+  return { circuitBreakerEnabled, breakerOpenSec, breakerThresholdPct };
+}
+
 // `whsec_` + 256 bits of entropy. Stored plaintext (the DO recomputes HMAC from
 // it at delivery time), so it is never recoverable via the API after creation.
 function generateSigningSecret(): string {
@@ -240,12 +337,30 @@ const publicColumns = {
   ordered: endpointsTable.ordered,
   rateLimitRps: endpointsTable.rateLimitRps,
   rateLimitBurst: endpointsTable.rateLimitBurst,
+  circuitBreakerEnabled: endpointsTable.circuitBreakerEnabled,
+  breakerOpenSec: endpointsTable.breakerOpenSec,
+  breakerThresholdPct: endpointsTable.breakerThresholdPct,
+  breakerState: endpointsTable.breakerState,
+  breakerOpenedAt: endpointsTable.breakerOpenedAt,
+  breakerOpenUntil: endpointsTable.breakerOpenUntil,
   createdAt: endpointsTable.createdAt,
 } as const;
 
 type PublicEndpoint = Pick<
   Endpoint,
-  "id" | "url" | "description" | "ordered" | "rateLimitRps" | "rateLimitBurst" | "createdAt"
+  | "id"
+  | "url"
+  | "description"
+  | "ordered"
+  | "rateLimitRps"
+  | "rateLimitBurst"
+  | "circuitBreakerEnabled"
+  | "breakerOpenSec"
+  | "breakerThresholdPct"
+  | "breakerState"
+  | "breakerOpenedAt"
+  | "breakerOpenUntil"
+  | "createdAt"
 >;
 
 function toPublic(e: PublicEndpoint) {
@@ -256,6 +371,12 @@ function toPublic(e: PublicEndpoint) {
     ordered: e.ordered,
     rate_limit_rps: e.rateLimitRps,
     rate_limit_burst: e.rateLimitBurst,
+    circuit_breaker_enabled: e.circuitBreakerEnabled,
+    breaker_open_sec: e.breakerOpenSec,
+    breaker_threshold_pct: e.breakerThresholdPct,
+    breaker_state: e.breakerState,
+    breaker_opened_at: e.breakerOpenedAt?.toISOString() ?? null,
+    breaker_open_until: e.breakerOpenUntil?.toISOString() ?? null,
     created_at: e.createdAt.toISOString(),
   };
 }

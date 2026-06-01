@@ -56,6 +56,12 @@ const endpoint: Endpoint = {
   ordered: false,
   rateLimitRps: null,
   rateLimitBurst: null,
+  circuitBreakerEnabled: false,
+  breakerOpenSec: null,
+  breakerThresholdPct: null,
+  breakerState: "closed",
+  breakerOpenedAt: null,
+  breakerOpenUntil: null,
   createdAt: new Date(NOW),
 };
 
