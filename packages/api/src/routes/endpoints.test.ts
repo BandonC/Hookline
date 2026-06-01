@@ -1,6 +1,6 @@
 import { describe, it, expect } from "vitest";
 import { HTTPException } from "hono/http-exception";
-import { parseRateConfigPatch } from "./endpoints";
+import { parseRateConfigPatch, parseBreakerConfigPatch } from "./endpoints";
 
 // PATCH validator for the rate-limit pair. Semantics (Q6 iii):
 //   - both absent  -> returns undefined (no change)
@@ -86,6 +86,110 @@ describe("parseRateConfigPatch", () => {
     expect(parseRateConfigPatch({ rate_limit_rps: 10, rate_limit_burst: 1 })).toEqual({
       rateLimitRps: 10,
       rateLimitBurst: 1,
+    });
+  });
+});
+
+// PATCH validator for the breaker triplet. Each field is independent and
+// optional (unlike the rate-limit pair). Null = clear (use code default at
+// gate time). Bounds: open_sec [1, 3600], threshold_pct [1, 100].
+describe("parseBreakerConfigPatch", () => {
+  it("returns undefined when no breaker field is present", () => {
+    expect(parseBreakerConfigPatch({})).toBeUndefined();
+    expect(parseBreakerConfigPatch({ ordered: true, rate_limit_rps: 1 })).toBeUndefined();
+  });
+
+  it("accepts circuit_breaker_enabled alone", () => {
+    expect(parseBreakerConfigPatch({ circuit_breaker_enabled: true })).toEqual({
+      circuitBreakerEnabled: true,
+      breakerOpenSec: undefined,
+      breakerThresholdPct: undefined,
+    });
+    expect(parseBreakerConfigPatch({ circuit_breaker_enabled: false })).toEqual({
+      circuitBreakerEnabled: false,
+      breakerOpenSec: undefined,
+      breakerThresholdPct: undefined,
+    });
+  });
+
+  it("accepts breaker_open_sec alone (independent of enabled)", () => {
+    expect(parseBreakerConfigPatch({ breaker_open_sec: 60 })).toEqual({
+      circuitBreakerEnabled: undefined,
+      breakerOpenSec: 60,
+      breakerThresholdPct: undefined,
+    });
+  });
+
+  it("accepts breaker_threshold_pct alone", () => {
+    expect(parseBreakerConfigPatch({ breaker_threshold_pct: 25 })).toEqual({
+      circuitBreakerEnabled: undefined,
+      breakerOpenSec: undefined,
+      breakerThresholdPct: 25,
+    });
+  });
+
+  it("accepts null for the two tunables (clear → code default)", () => {
+    expect(parseBreakerConfigPatch({ breaker_open_sec: null, breaker_threshold_pct: null })).toEqual({
+      circuitBreakerEnabled: undefined,
+      breakerOpenSec: null,
+      breakerThresholdPct: null,
+    });
+  });
+
+  it("accepts a full triplet", () => {
+    expect(
+      parseBreakerConfigPatch({
+        circuit_breaker_enabled: true,
+        breaker_open_sec: 30,
+        breaker_threshold_pct: 50,
+      }),
+    ).toEqual({
+      circuitBreakerEnabled: true,
+      breakerOpenSec: 30,
+      breakerThresholdPct: 50,
+    });
+  });
+
+  it("rejects non-boolean circuit_breaker_enabled", () => {
+    expectHttp(400, () => parseBreakerConfigPatch({ circuit_breaker_enabled: "true" }));
+    expectHttp(400, () => parseBreakerConfigPatch({ circuit_breaker_enabled: 1 }));
+    expectHttp(400, () => parseBreakerConfigPatch({ circuit_breaker_enabled: null }));
+  });
+
+  it("rejects breaker_open_sec out of [1, 3600]", () => {
+    expectHttp(400, () => parseBreakerConfigPatch({ breaker_open_sec: 0 }));
+    expectHttp(400, () => parseBreakerConfigPatch({ breaker_open_sec: 3601 }));
+    expectHttp(400, () => parseBreakerConfigPatch({ breaker_open_sec: -5 }));
+    expectHttp(400, () => parseBreakerConfigPatch({ breaker_open_sec: 1.5 }));
+    expectHttp(400, () => parseBreakerConfigPatch({ breaker_open_sec: "30" }));
+  });
+
+  it("rejects breaker_threshold_pct out of [1, 100]", () => {
+    expectHttp(400, () => parseBreakerConfigPatch({ breaker_threshold_pct: 0 }));
+    expectHttp(400, () => parseBreakerConfigPatch({ breaker_threshold_pct: 101 }));
+    expectHttp(400, () => parseBreakerConfigPatch({ breaker_threshold_pct: 50.5 }));
+  });
+
+  it("accepts boundary values", () => {
+    expect(parseBreakerConfigPatch({ breaker_open_sec: 1 })).toEqual({
+      circuitBreakerEnabled: undefined,
+      breakerOpenSec: 1,
+      breakerThresholdPct: undefined,
+    });
+    expect(parseBreakerConfigPatch({ breaker_open_sec: 3600 })).toEqual({
+      circuitBreakerEnabled: undefined,
+      breakerOpenSec: 3600,
+      breakerThresholdPct: undefined,
+    });
+    expect(parseBreakerConfigPatch({ breaker_threshold_pct: 1 })).toEqual({
+      circuitBreakerEnabled: undefined,
+      breakerOpenSec: undefined,
+      breakerThresholdPct: 1,
+    });
+    expect(parseBreakerConfigPatch({ breaker_threshold_pct: 100 })).toEqual({
+      circuitBreakerEnabled: undefined,
+      breakerOpenSec: undefined,
+      breakerThresholdPct: 100,
     });
   });
 });

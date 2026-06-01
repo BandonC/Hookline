@@ -7,6 +7,16 @@ import { computeBackoff } from "../backoff";
 import { signPayload } from "../signing";
 import { computeShard } from "../sharding";
 import { bucketWindowMs, computeTokens, nextTokenAvailableAt } from "../rate-limit";
+import {
+  failureRate,
+  shouldTrip,
+  isSuccessStatus,
+  BREAKER_WINDOW_MS,
+  BREAKER_MIN_SAMPLES,
+  BREAKER_OPEN_SEC_DEFAULT,
+  BREAKER_THRESHOLD_PCT_DEFAULT,
+  type AttemptSample,
+} from "../circuit-breaker";
 
 const MAX_ATTEMPTS = 6;
 const REQUEST_TIMEOUT_MS = 10_000;
@@ -93,17 +103,17 @@ export class EndpointDO {
 // from racing with sub-DOs on the same endpoint (Model C invariant): null-key
 // events live here, non-null-key events live on sub-DOs.
 //
-// Rate-limit gate (v2): when configured, the bucket is reconstructed once
-// per tick from this DO's recent attempts (its shard scope only). The loop
-// consumes tokens locally; when dry, the current event is marked deferred,
-// the alarm is moved to the next-token time, and we return without
-// delivering. No delivery_attempts row is written on defer.
+// Gate order (Decision I): breaker → due+owned → rate limit. Breaker is
+// per-endpoint state; rate-limit bucket is per-shard. No delivery_attempts
+// row is written on a defer of either kind.
 export async function alarmUnordered(
   db: ReturnType<typeof drizzle>,
   endpoint: Endpoint,
   storage: DurableObjectState["storage"],
 ): Promise<void> {
   const now = Date.now();
+  const breaker = await loadBreakerGate(db, endpoint, now);
+
   const due = await db
     .select()
     .from(events)
@@ -116,24 +126,93 @@ export async function alarmUnordered(
       ),
     );
 
+  // Breaker deferAll: every due event becomes a breaker_open defer, alarm
+  // re-arms to the next breaker re-evaluation time. No delivery happens.
+  if (breaker.kind === "deferAll") {
+    for (const event of due) {
+      await setBreakerDefer(db, event.id);
+    }
+    if (due.length > 0) await storage.setAlarm(breaker.reArmTo);
+    return;
+  }
+
+  // Breaker trial: this DO won the open→half_open CAS. Deliver exactly one
+  // event, then CAS based on outcome. If we have no work, option (a):
+  // CAS back to open with a fresh open_until so the next half-open attempt
+  // happens after another full open cycle.
+  if (breaker.kind === "trial") {
+    if (due.length === 0) {
+      await tryCasHalfOpenToOpen(db, endpoint.id, now, breaker.openMs);
+      return; // no work to re-arm to
+    }
+    const trial = due[0]!;
+    const { delivered } = await deliver(db, trial, endpoint);
+    if (delivered) {
+      await tryCasHalfOpenToClosed(db, endpoint.id);
+    } else {
+      await tryCasHalfOpenToOpen(db, endpoint.id, Date.now(), breaker.openMs);
+    }
+    // Re-arm to soonest still-pending null-key event; subsequent ticks handle
+    // the rest under the post-trial state (closed = deliver, open = defer).
+    await reArmUnordered(db, endpoint.id, storage);
+    return;
+  }
+
+  // Breaker closed (or disabled). Run the normal loop with rate-limit gate
+  // and a mid-loop trip check that observes the trial's outcome by tracking
+  // samples locally — no extra SQL per delivery.
   const gate = await loadRateGate(db, endpoint, null, now);
+  const breakerSamples: AttemptSample[] = breaker.kind === "closed" ? [...breaker.samples] : [];
+  let breakerTripped = false;
+  let tripReArmTo: number | null = null;
 
   for (const event of due) {
+    if (breakerTripped) {
+      await setBreakerDefer(db, event.id);
+      continue;
+    }
     if (gate && gate.tokens < 1) {
       await deferForRate(db, storage, event, gate, now);
       return;
     }
-    await deliver(db, event, endpoint);
+    const { delivered } = await deliver(db, event, endpoint);
     if (gate) gate.tokens -= 1;
+
+    if (breaker.kind === "closed") {
+      const obsNow = Date.now();
+      breakerSamples.push({ attemptedAt: obsNow, success: delivered });
+      const { rate, count } = failureRate(breakerSamples, BREAKER_WINDOW_MS, obsNow);
+      if (shouldTrip(rate, count, BREAKER_MIN_SAMPLES, breaker.thresholdPct)) {
+        await tryCasClosedToOpen(db, endpoint.id, obsNow, breaker.openMs);
+        // Whether we won or lost the CAS, the breaker is now open from this
+        // DO's perspective — defer the remaining due events.
+        breakerTripped = true;
+        tripReArmTo = obsNow + breaker.openMs;
+      }
+    }
   }
 
-  // Re-arm to the soonest still-scheduled null-key pending event.
+  if (breakerTripped && tripReArmTo !== null) {
+    await storage.setAlarm(tripReArmTo);
+    return;
+  }
+  await reArmUnordered(db, endpoint.id, storage);
+}
+
+// Re-arm to the soonest still-scheduled null-key pending event for this
+// endpoint. Extracted because both the trial path and the normal-loop path
+// need the same wake-up.
+async function reArmUnordered(
+  db: ReturnType<typeof drizzle>,
+  endpointId: string,
+  storage: DurableObjectState["storage"],
+): Promise<void> {
   const [next] = await db
     .select({ nextAttemptAt: events.nextAttemptAt })
     .from(events)
     .where(
       and(
-        eq(events.endpointId, endpoint.id),
+        eq(events.endpointId, endpointId),
         isNull(events.orderingKey),
         eq(events.status, "pending"),
         isNotNull(events.nextAttemptAt),
@@ -141,7 +220,6 @@ export async function alarmUnordered(
     )
     .orderBy(asc(events.nextAttemptAt))
     .limit(1);
-
   if (next?.nextAttemptAt) {
     await storage.setAlarm(next.nextAttemptAt.getTime());
   }
@@ -169,29 +247,93 @@ export async function alarmOrdered(
   storage: DurableObjectState["storage"],
 ): Promise<void> {
   const now = Date.now();
+  const breaker = await loadBreakerGate(db, endpoint, now);
 
-  // Rate-limit gate is the SECOND gate, after due+owned: a head we own and
-  // that's due may still be declined if this sub-DO's bucket is dry. Same
-  // per-shard isolation as the bare path — sub-DOs each replay only their
-  // own attempts.
-  const gate = await loadRateGate(db, endpoint, shard, now);
-
+  // Compute owned, due heads up front: the breaker defer/trial paths need
+  // the same answer the normal loop does. ownedHeads filters by shard;
+  // here we additionally filter by due time so the trial picks an actually-
+  // ready head (a head whose next_attempt_at is in the future would
+  // otherwise be "delivered early" by the trial path).
+  const ownedDueHeads: Event[] = [];
   for (const head of await ownedHeads(db, endpoint.id, shard)) {
-    if (!head.nextAttemptAt) continue; // pending implies scheduled; defensive
-    if (head.nextAttemptAt.getTime() > now) continue; // head not yet due — wait, don't skip
+    if (!head.nextAttemptAt) continue;
+    if (head.nextAttemptAt.getTime() > now) continue;
+    ownedDueHeads.push(head);
+  }
+
+  if (breaker.kind === "deferAll") {
+    for (const head of ownedDueHeads) {
+      await setBreakerDefer(db, head.id);
+    }
+    if (ownedDueHeads.length > 0) await storage.setAlarm(breaker.reArmTo);
+    return;
+  }
+
+  if (breaker.kind === "trial") {
+    if (ownedDueHeads.length === 0) {
+      await tryCasHalfOpenToOpen(db, endpoint.id, now, breaker.openMs);
+      return;
+    }
+    const trial = ownedDueHeads[0]!;
+    const { delivered } = await deliver(db, trial, endpoint);
+    if (delivered) {
+      await tryCasHalfOpenToClosed(db, endpoint.id);
+    } else {
+      await tryCasHalfOpenToOpen(db, endpoint.id, Date.now(), breaker.openMs);
+    }
+    await reArmOrdered(db, endpoint.id, shard, storage);
+    return;
+  }
+
+  // Breaker closed (or disabled). Normal loop with rate-limit gate + mid-loop
+  // trip check.
+  const gate = await loadRateGate(db, endpoint, shard, now);
+  const breakerSamples: AttemptSample[] = breaker.kind === "closed" ? [...breaker.samples] : [];
+  let breakerTripped = false;
+  let tripReArmTo: number | null = null;
+
+  for (const head of ownedDueHeads) {
+    if (breakerTripped) {
+      await setBreakerDefer(db, head.id);
+      continue;
+    }
     if (gate && gate.tokens < 1) {
       await deferForRate(db, storage, head, gate, now);
       return;
     }
-    await deliver(db, head, endpoint);
+    const { delivered } = await deliver(db, head, endpoint);
     if (gate) gate.tokens -= 1;
+
+    if (breaker.kind === "closed") {
+      const obsNow = Date.now();
+      breakerSamples.push({ attemptedAt: obsNow, success: delivered });
+      const { rate, count } = failureRate(breakerSamples, BREAKER_WINDOW_MS, obsNow);
+      if (shouldTrip(rate, count, BREAKER_MIN_SAMPLES, breaker.thresholdPct)) {
+        await tryCasClosedToOpen(db, endpoint.id, obsNow, breaker.openMs);
+        breakerTripped = true;
+        tripReArmTo = obsNow + breaker.openMs;
+      }
+    }
   }
 
-  // Re-arm to the soonest still-pending owned head. Deliveries above may have
-  // marked heads delivered/failed, advanced keys to a new head, or pushed the
-  // same head's next_attempt_at into the future — so we re-query.
+  if (breakerTripped && tripReArmTo !== null) {
+    await storage.setAlarm(tripReArmTo);
+    return;
+  }
+  await reArmOrdered(db, endpoint.id, shard, storage);
+}
+
+// Re-arm to the soonest still-pending owned head on this shard. Deliveries
+// may have marked heads delivered/failed, advanced keys to a new head, or
+// pushed the same head's next_attempt_at into the future — re-query.
+async function reArmOrdered(
+  db: ReturnType<typeof drizzle>,
+  endpointId: string,
+  shard: number,
+  storage: DurableObjectState["storage"],
+): Promise<void> {
   let soonest: number | null = null;
-  for (const head of await ownedHeads(db, endpoint.id, shard)) {
+  for (const head of await ownedHeads(db, endpointId, shard)) {
     if (!head.nextAttemptAt) continue;
     const t = head.nextAttemptAt.getTime();
     soonest = soonest === null ? t : Math.min(soonest, t);
@@ -245,7 +387,7 @@ export async function deliver(
   db: ReturnType<typeof drizzle>,
   event: Event,
   endpoint: Endpoint,
-): Promise<void> {
+): Promise<{ delivered: boolean }> {
   // [Inv. 2/5] Sign an envelope that carries the event id, so the id is inside
   // the signed body — not merely an unsigned header. signPayload signs
   // `${timestamp}.${rawBody}`; we compute rawBody once and POST those exact
@@ -311,7 +453,7 @@ export async function deliver(
         .set({ status: "delivered", nextAttemptAt: null, lastDeferReason: null })
         .where(eq(events.id, event.id)),
     ]);
-    return;
+    return { delivered: true };
   }
 
   if (attemptNumber >= MAX_ATTEMPTS) {
@@ -334,7 +476,7 @@ export async function deliver(
         .where(eq(events.id, event.id)),
       db.insert(deadLetters).values({ eventId: event.id, finalError }),
     ]);
-    return;
+    return { delivered: false };
   }
 
   // Failed, under max: schedule the next attempt on the decorrelated-jitter
@@ -356,6 +498,7 @@ export async function deliver(
       })
       .where(eq(events.id, event.id)),
   ]);
+  return { delivered: false };
 }
 
 // Rate-limit gate state for one alarm tick. `tokens` is reconstructed from the
@@ -426,6 +569,183 @@ async function deferForRate(
     .set({ lastDeferReason: "rate_limited" })
     .where(eq(events.id, event.id));
   await storage.setAlarm(nextTokenAvailableAt(gate.tokens, gate.rate, now));
+}
+
+// ============================================================================
+// Circuit breaker — runs as the FIRST gate, ahead of due+owned and rate limit.
+// State (closed/open/half_open + open_until) is persisted on the endpoint row
+// because it must be shared across the bare DO + K sub-DOs (Decision C).
+// Transitions use D1 CAS (UPDATE ... WHERE id=? AND breaker_state=?) so only
+// one DO ever wins a given transition.
+// ============================================================================
+
+// A breaker verdict tells the alarm path exactly what to do this tick:
+//   - "skip":     breaker is disabled — proceed as if it didn't exist.
+//   - "closed":   proceed; observe samples; if shouldTrip mid-loop, CAS open.
+//   - "deferAll": breaker is open (or another DO holds the half-open trial).
+//                 Every due event becomes a breaker_open defer.
+//   - "trial":    THIS DO won the open→half_open CAS. Deliver exactly ONE
+//                 event, then CAS to closed (success) or open (failure).
+type BreakerVerdict =
+  | { kind: "skip" }
+  | { kind: "closed"; samples: AttemptSample[]; thresholdPct: number; openMs: number }
+  | { kind: "deferAll"; reArmTo: number }
+  | { kind: "trial"; openMs: number };
+
+// Resolve the per-endpoint tunables to concrete numbers (column null = default).
+function resolveBreakerKnobs(endpoint: Endpoint): { openMs: number; thresholdPct: number } {
+  return {
+    openMs: (endpoint.breakerOpenSec ?? BREAKER_OPEN_SEC_DEFAULT) * 1000,
+    thresholdPct: endpoint.breakerThresholdPct ?? BREAKER_THRESHOLD_PCT_DEFAULT,
+  };
+}
+
+// Per-endpoint failure samples in the rolling window. Scoped to ALL attempts
+// on this endpoint, regardless of shard — circuit state is per-endpoint, not
+// per-shard (Decision C). The window is bounded (30s), so the result set is
+// small even on busy endpoints.
+async function loadBreakerSamples(
+  db: ReturnType<typeof drizzle>,
+  endpointId: string,
+  now: number,
+): Promise<AttemptSample[]> {
+  const cutoff = new Date(now - BREAKER_WINDOW_MS);
+  const rows = await db
+    .select({
+      attemptedAt: deliveryAttempts.attemptedAt,
+      statusCode: deliveryAttempts.statusCode,
+    })
+    .from(deliveryAttempts)
+    .innerJoin(events, eq(deliveryAttempts.eventId, events.id))
+    .where(
+      and(
+        eq(events.endpointId, endpointId),
+        gte(deliveryAttempts.attemptedAt, cutoff),
+      ),
+    );
+  return rows.map((r) => ({
+    attemptedAt: r.attemptedAt.getTime(),
+    success: isSuccessStatus(r.statusCode),
+  }));
+}
+
+// Decide what the alarm tick may do, based on the current persisted breaker
+// state and (for closed state) the recent attempt history. May perform a CAS
+// to claim the half-open trial slot. Idempotent on retry: a CAS that
+// previously succeeded looks like "already half_open" on the second run,
+// which falls through to deferAll — safe.
+async function loadBreakerGate(
+  db: ReturnType<typeof drizzle>,
+  endpoint: Endpoint,
+  now: number,
+): Promise<BreakerVerdict> {
+  if (!endpoint.circuitBreakerEnabled) return { kind: "skip" };
+  const { openMs, thresholdPct } = resolveBreakerKnobs(endpoint);
+
+  if (endpoint.breakerState === "closed") {
+    const samples = await loadBreakerSamples(db, endpoint.id, now);
+    return { kind: "closed", samples, thresholdPct, openMs };
+  }
+
+  if (endpoint.breakerState === "open") {
+    const openUntilMs = endpoint.breakerOpenUntil?.getTime() ?? now;
+    if (now < openUntilMs) {
+      return { kind: "deferAll", reArmTo: openUntilMs };
+    }
+    // Time to test the receiver. Race with K other DOs for the trial slot.
+    const won = await tryCasOpenToHalfOpen(db, endpoint.id);
+    if (won) return { kind: "trial", openMs };
+    // Lost the race — someone else owns the trial. Wait one full open-cycle
+    // as a pessimistic fallback (assumes the trial fails). If the trial
+    // succeeds, the next tick sees state=closed and proceeds normally.
+    return { kind: "deferAll", reArmTo: now + openMs };
+  }
+
+  // state === "half_open" and we didn't transition this tick → another DO
+  // is mid-trial. Same wait-out as the lost-CAS case above.
+  return { kind: "deferAll", reArmTo: now + openMs };
+}
+
+// CAS helpers. Each returns true iff the UPDATE actually changed a row.
+// D1's `db.run()` exposes `meta.changes`; for drizzle-d1 the .returning()
+// row count tells us the same thing in a type-safe way.
+async function tryCasState(
+  db: ReturnType<typeof drizzle>,
+  endpointId: string,
+  fromState: "closed" | "open" | "half_open",
+  patch: {
+    breakerState: "closed" | "open" | "half_open";
+    breakerOpenedAt?: Date | null;
+    breakerOpenUntil?: Date | null;
+  },
+): Promise<boolean> {
+  const rows = await db
+    .update(endpoints)
+    .set(patch)
+    .where(and(eq(endpoints.id, endpointId), eq(endpoints.breakerState, fromState)))
+    .returning({ id: endpoints.id });
+  return rows.length === 1;
+}
+
+async function tryCasClosedToOpen(
+  db: ReturnType<typeof drizzle>,
+  endpointId: string,
+  now: number,
+  openMs: number,
+): Promise<boolean> {
+  return tryCasState(db, endpointId, "closed", {
+    breakerState: "open",
+    breakerOpenedAt: new Date(now),
+    breakerOpenUntil: new Date(now + openMs),
+  });
+}
+
+async function tryCasOpenToHalfOpen(
+  db: ReturnType<typeof drizzle>,
+  endpointId: string,
+): Promise<boolean> {
+  // opened_at / open_until stay frozen at the prior open's values during the
+  // trial — useful for the dashboard "open since X" display.
+  return tryCasState(db, endpointId, "open", { breakerState: "half_open" });
+}
+
+async function tryCasHalfOpenToClosed(
+  db: ReturnType<typeof drizzle>,
+  endpointId: string,
+): Promise<boolean> {
+  return tryCasState(db, endpointId, "half_open", {
+    breakerState: "closed",
+    breakerOpenedAt: null,
+    breakerOpenUntil: null,
+  });
+}
+
+async function tryCasHalfOpenToOpen(
+  db: ReturnType<typeof drizzle>,
+  endpointId: string,
+  now: number,
+  openMs: number,
+): Promise<boolean> {
+  // Either a failed trial OR the "no-work-on-trial" fallback (option a).
+  // opened_at is refreshed because conceptually this is a new open period.
+  return tryCasState(db, endpointId, "half_open", {
+    breakerState: "open",
+    breakerOpenedAt: new Date(now),
+    breakerOpenUntil: new Date(now + openMs),
+  });
+}
+
+// Defer path: breaker says no. Same shape as deferForRate — set the reason,
+// leave status / attempt_count / next_attempt_at untouched. The event will
+// re-fire when alarm() is poked or re-arms.
+async function setBreakerDefer(
+  db: ReturnType<typeof drizzle>,
+  eventId: string,
+): Promise<void> {
+  await db
+    .update(events)
+    .set({ lastDeferReason: "breaker_open" })
+    .where(eq(events.id, eventId));
 }
 
 // Invariant 4: read at most `cap` bytes, then stop and cancel. Never buffer the

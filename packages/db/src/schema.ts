@@ -13,6 +13,20 @@ export const endpoints = sqliteTable("endpoints", {
   // rows and future config shapes).
   rateLimitRps: integer("rate_limit_rps"),
   rateLimitBurst: integer("rate_limit_burst"),
+  // v2 circuit breaker. `circuit_breaker_enabled` is the operator intent flag.
+  // The two tunables are nullable (null = use code default); validation lives
+  // at the PATCH route. The three runtime-state columns are managed by the DO
+  // via CAS — see packages/api/src/do/endpoint-do.ts. PATCH resets the runtime
+  // state whenever `circuit_breaker_enabled` is in the body, so toggling the
+  // flag never leaves stale state behind.
+  circuitBreakerEnabled: integer("circuit_breaker_enabled", { mode: "boolean" })
+    .notNull().default(false),
+  breakerOpenSec: integer("breaker_open_sec"),
+  breakerThresholdPct: integer("breaker_threshold_pct"),
+  breakerState: text("breaker_state", { enum: ["closed", "open", "half_open"] })
+    .notNull().default("closed"),
+  breakerOpenedAt: integer("breaker_opened_at", { mode: "timestamp_ms" }),
+  breakerOpenUntil: integer("breaker_open_until", { mode: "timestamp_ms" }),
   createdAt: integer("created_at", { mode: "timestamp_ms" })
     .notNull().default(sql`(unixepoch() * 1000)`),
 });
@@ -34,7 +48,7 @@ export const events = sqliteTable("events", {
   // bucket dry), record WHY. Cleared in every deliver() batch so it always
   // reflects the most recent scheduling decision. Enum widens for v2's
   // circuit breaker + fair scheduling later.
-  lastDeferReason: text("last_defer_reason", { enum: ["rate_limited"] }),
+  lastDeferReason: text("last_defer_reason", { enum: ["rate_limited", "breaker_open"] }),
   createdAt: integer("created_at", { mode: "timestamp_ms" })
     .notNull().default(sql`(unixepoch() * 1000)`),
 }, (t) => ({
