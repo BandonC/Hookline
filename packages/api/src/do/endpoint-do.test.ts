@@ -54,6 +54,8 @@ const endpoint: Endpoint = {
   signingSecret: "whsec_test_secret",
   description: null,
   ordered: false,
+  rateLimitRps: null,
+  rateLimitBurst: null,
   createdAt: new Date(NOW),
 };
 
@@ -67,6 +69,7 @@ function makeEvent(overrides: Partial<Event> = {}): Event {
     nextAttemptAt: new Date(NOW),
     lastDelayMs: null,
     orderingKey: null,
+    lastDeferReason: null,
     createdAt: new Date(NOW),
     ...overrides,
   };

@@ -10,6 +10,8 @@ const publicEndpointColumns = {
   url: endpoints.url,
   description: endpoints.description,
   ordered: endpoints.ordered,
+  rateLimitRps: endpoints.rateLimitRps,
+  rateLimitBurst: endpoints.rateLimitBurst,
   createdAt: endpoints.createdAt,
 } as const;
 
@@ -53,6 +55,7 @@ export async function eventWithAttempts(id: string) {
       attemptCount: events.attemptCount,
       nextAttemptAt: events.nextAttemptAt,
       orderingKey: events.orderingKey,
+      lastDeferReason: events.lastDeferReason,
       createdAt: events.createdAt,
     })
     .from(events)

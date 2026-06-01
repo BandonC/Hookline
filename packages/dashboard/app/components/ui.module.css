@@ -125,6 +125,11 @@
   color: var(--fg);
   border: 1px solid var(--border);
 }
+.badgeThrottled {
+  background: var(--warn-bg);
+  color: var(--warn-fg);
+  border: 1px solid var(--warn-fg);
+}
 
 .metaGrid {
   display: grid;

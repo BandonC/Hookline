@@ -7,6 +7,12 @@ export const endpoints = sqliteTable("endpoints", {
   signingSecret: text("signing_secret").notNull(), // plaintext; generated at creation, shown once
   description: text("description"),
   ordered: integer("ordered", { mode: "boolean" }).notNull().default(false), // v2; unused in v1
+  // v2 per-endpoint rate limiting. Both nullable; either NULL = unlimited.
+  // Validation: both must be set together or both NULL (enforced at the PATCH
+  // route, not the DB — keeps the schema permissive for ingestion of older
+  // rows and future config shapes).
+  rateLimitRps: integer("rate_limit_rps"),
+  rateLimitBurst: integer("rate_limit_burst"),
   createdAt: integer("created_at", { mode: "timestamp_ms" })
     .notNull().default(sql`(unixepoch() * 1000)`),
 });
@@ -24,6 +30,11 @@ export const events = sqliteTable("events", {
   // ingestion API, not the DB, so flipping endpoints.ordered later doesn't
   // retroactively invalidate historical rows.
   orderingKey: text("ordering_key"),
+  // v2 rate limiting: when the DO declines to deliver this tick (e.g. token
+  // bucket dry), record WHY. Cleared in every deliver() batch so it always
+  // reflects the most recent scheduling decision. Enum widens for v2's
+  // circuit breaker + fair scheduling later.
+  lastDeferReason: text("last_defer_reason", { enum: ["rate_limited"] }),
   createdAt: integer("created_at", { mode: "timestamp_ms" })
     .notNull().default(sql`(unixepoch() * 1000)`),
 }, (t) => ({
@@ -45,7 +56,13 @@ export const deliveryAttempts = sqliteTable("delivery_attempts", {
   latencyMs: integer("latency_ms"),
   attemptedAt: integer("attempted_at", { mode: "timestamp_ms" })
     .notNull().default(sql`(unixepoch() * 1000)`),
-});
+}, (t) => ({
+  // v2 rate-limit bucket replay: per alarm tick the DO joins attempts back
+  // to events filtered by endpoint (+shard) and time window. Composite
+  // covers both the FK join (leading column) and the recent-time filter.
+  // See packages/api/src/rate-limit.ts.
+  attemptByEventTimeIdx: index("attempt_by_event_time_idx").on(t.eventId, t.attemptedAt),
+}));
 
 export const deadLetters = sqliteTable("dead_letters", {
   eventId: text("event_id").primaryKey().references(() => events.id),

@@ -34,6 +34,12 @@ export default async function EventDetail({ params }: { params: Promise<{ id: st
             <span className={styles.muted}>Status</span>
             <div>
               <StatusBadge status={event.status} />
+              {event.status === "pending" && event.lastDeferReason === "rate_limited" ? (
+                <>
+                  {" "}
+                  <span className={`${styles.badge} ${styles.badgeThrottled}`}>throttled</span>
+                </>
+              ) : null}
             </div>
           </div>
           <div>
