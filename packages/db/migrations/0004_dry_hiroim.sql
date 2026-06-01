@@ -1,0 +1,1 @@
+CREATE INDEX `attempt_by_event_time_idx` ON `delivery_attempts` (`event_id`,`attempted_at`);

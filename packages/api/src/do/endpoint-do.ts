@@ -1,11 +1,12 @@
 import { drizzle } from "drizzle-orm/d1";
-import { and, asc, eq, isNotNull, isNull, lte } from "drizzle-orm";
+import { and, asc, eq, gte, isNotNull, isNull, lte } from "drizzle-orm";
 import { nanoid } from "nanoid";
 import { endpoints, events, deliveryAttempts, deadLetters } from "@hookline/db";
 import type { Endpoint, Event } from "@hookline/db";
 import { computeBackoff } from "../backoff";
 import { signPayload } from "../signing";
 import { computeShard } from "../sharding";
+import { bucketWindowMs, computeTokens, nextTokenAvailableAt } from "../rate-limit";
 
 const MAX_ATTEMPTS = 6;
 const REQUEST_TIMEOUT_MS = 10_000;
@@ -91,7 +92,13 @@ export class EndpointDO {
 // time has come. The `ordering_key IS NULL` filter is what keeps the bare DO
 // from racing with sub-DOs on the same endpoint (Model C invariant): null-key
 // events live here, non-null-key events live on sub-DOs.
-async function alarmUnordered(
+//
+// Rate-limit gate (v2): when configured, the bucket is reconstructed once
+// per tick from this DO's recent attempts (its shard scope only). The loop
+// consumes tokens locally; when dry, the current event is marked deferred,
+// the alarm is moved to the next-token time, and we return without
+// delivering. No delivery_attempts row is written on defer.
+export async function alarmUnordered(
   db: ReturnType<typeof drizzle>,
   endpoint: Endpoint,
   storage: DurableObjectState["storage"],
@@ -109,8 +116,15 @@ async function alarmUnordered(
       ),
     );
 
+  const gate = await loadRateGate(db, endpoint, null, now);
+
   for (const event of due) {
+    if (gate && gate.tokens < 1) {
+      await deferForRate(db, storage, event, gate, now);
+      return;
+    }
     await deliver(db, event, endpoint);
+    if (gate) gate.tokens -= 1;
   }
 
   // Re-arm to the soonest still-scheduled null-key pending event.
@@ -148,7 +162,7 @@ async function alarmUnordered(
 // different sub-DOs run in parallel by virtue of being different DOs. Same-
 // shard different-key deliveries serialize at the sub-DO; that's the known
 // cost of finite K, not a correctness issue.
-async function alarmOrdered(
+export async function alarmOrdered(
   db: ReturnType<typeof drizzle>,
   endpoint: Endpoint,
   shard: number,
@@ -156,10 +170,21 @@ async function alarmOrdered(
 ): Promise<void> {
   const now = Date.now();
 
+  // Rate-limit gate is the SECOND gate, after due+owned: a head we own and
+  // that's due may still be declined if this sub-DO's bucket is dry. Same
+  // per-shard isolation as the bare path — sub-DOs each replay only their
+  // own attempts.
+  const gate = await loadRateGate(db, endpoint, shard, now);
+
   for (const head of await ownedHeads(db, endpoint.id, shard)) {
     if (!head.nextAttemptAt) continue; // pending implies scheduled; defensive
     if (head.nextAttemptAt.getTime() > now) continue; // head not yet due — wait, don't skip
+    if (gate && gate.tokens < 1) {
+      await deferForRate(db, storage, head, gate, now);
+      return;
+    }
     await deliver(db, head, endpoint);
+    if (gate) gate.tokens -= 1;
   }
 
   // Re-arm to the soonest still-pending owned head. Deliveries above may have
@@ -264,6 +289,10 @@ export async function deliver(
 
   // [Inv. 3] The attempt row is always the first statement; the event mutation
   // (and, on exhaustion, the dead-letter insert) ride in the SAME batch.
+  // attemptedAt is set explicitly (not via the schema default) because the
+  // default `unixepoch() * 1000` truncates to whole seconds — the rate-limit
+  // bucket replay in rate-limit.ts needs ms precision to compute refill
+  // intervals accurately at higher rps values.
   const attemptInsert = db.insert(deliveryAttempts).values({
     id: `att_${nanoid()}`,
     eventId: event.id,
@@ -271,6 +300,7 @@ export async function deliver(
     statusCode,
     responseSnippet: snippet,
     latencyMs,
+    attemptedAt: new Date(start),
   });
 
   if (delivered) {
@@ -278,7 +308,7 @@ export async function deliver(
       attemptInsert,
       db
         .update(events)
-        .set({ status: "delivered", nextAttemptAt: null })
+        .set({ status: "delivered", nextAttemptAt: null, lastDeferReason: null })
         .where(eq(events.id, event.id)),
     ]);
     return;
@@ -295,7 +325,12 @@ export async function deliver(
       attemptInsert,
       db
         .update(events)
-        .set({ status: "failed", nextAttemptAt: null, attemptCount: attemptNumber })
+        .set({
+          status: "failed",
+          nextAttemptAt: null,
+          attemptCount: attemptNumber,
+          lastDeferReason: null,
+        })
         .where(eq(events.id, event.id)),
       db.insert(deadLetters).values({ eventId: event.id, finalError }),
     ]);
@@ -315,9 +350,82 @@ export async function deliver(
         attemptCount: attemptNumber,
         nextAttemptAt: new Date(Date.now() + delay),
         lastDelayMs: delay,
+        // Cleared on every attempt — last_defer_reason reflects the most
+        // recent scheduling decision, which here is "actually attempted."
+        lastDeferReason: null,
       })
       .where(eq(events.id, event.id)),
   ]);
+}
+
+// Rate-limit gate state for one alarm tick. `tokens` is reconstructed from the
+// recent attempt history scoped to this DO's shard, and mutated locally as
+// the loop consumes. Null when the endpoint has no rate config — the gate is
+// then skipped entirely (today's unlimited behavior).
+type RateGate = { tokens: number; rate: number; burst: number };
+
+async function loadRateGate(
+  db: ReturnType<typeof drizzle>,
+  endpoint: Endpoint,
+  shard: number | null,
+  now: number,
+): Promise<RateGate | null> {
+  const rate = endpoint.rateLimitRps;
+  const burst = endpoint.rateLimitBurst;
+  if (rate === null || burst === null) return null;
+
+  // Query is bounded by the bucket window (burst/rate sec) and uses the
+  // (event_id, attempted_at) composite index for both the FK join and the
+  // time filter. Shard membership can't be expressed in SQL (SHA-256 isn't
+  // a SQLite function), so we filter null vs non-null in the WHERE and
+  // recompute per-key shard in code.
+  const windowStart = new Date(now - bucketWindowMs(rate, burst));
+  const rows = await db
+    .select({
+      attemptedAt: deliveryAttempts.attemptedAt,
+      orderingKey: events.orderingKey,
+    })
+    .from(deliveryAttempts)
+    .innerJoin(events, eq(deliveryAttempts.eventId, events.id))
+    .where(
+      and(
+        eq(events.endpointId, endpoint.id),
+        gte(deliveryAttempts.attemptedAt, windowStart),
+        shard === null ? isNull(events.orderingKey) : isNotNull(events.orderingKey),
+      ),
+    );
+
+  const timestamps: number[] = [];
+  for (const r of rows) {
+    if (shard === null) {
+      // WHERE already restricted to null-key; nothing more to do.
+      timestamps.push(r.attemptedAt.getTime());
+    } else if (r.orderingKey !== null && (await computeShard(r.orderingKey)) === shard) {
+      timestamps.push(r.attemptedAt.getTime());
+    }
+  }
+  timestamps.sort((a, b) => a - b);
+
+  return { tokens: computeTokens(timestamps, rate, burst, now), rate, burst };
+}
+
+// Defer path: the bucket is dry for `event`. Mark it deferred (b1 — the
+// most recent scheduling decision is the rate-limit gate), set the alarm
+// to the next-token time, and return without writing a delivery_attempts
+// row. No event status, attempt_count, or next_attempt_at is touched —
+// the event stays exactly as it was, just with last_defer_reason set.
+async function deferForRate(
+  db: ReturnType<typeof drizzle>,
+  storage: DurableObjectState["storage"],
+  event: Event,
+  gate: RateGate,
+  now: number,
+): Promise<void> {
+  await db
+    .update(events)
+    .set({ lastDeferReason: "rate_limited" })
+    .where(eq(events.id, event.id));
+  await storage.setAlarm(nextTokenAvailableAt(gate.tokens, gate.rate, now));
 }
 
 // Invariant 4: read at most `cap` bytes, then stop and cancel. Never buffer the

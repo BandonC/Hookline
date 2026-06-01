@@ -40,6 +40,7 @@ export default async function Home() {
                     <th>URL</th>
                     <th>Description</th>
                     <th>Ordered</th>
+                    <th>Rate limit</th>
                     <th className={styles.num}>Pending</th>
                     <th>Created</th>
                   </tr>
@@ -61,6 +62,15 @@ export default async function Home() {
                       <td>
                         {e.ordered ? (
                           <span className={`${styles.badge} ${styles.badgeOrdered}`}>Ordered</span>
+                        ) : (
+                          <span className={styles.muted}>—</span>
+                        )}
+                      </td>
+                      <td>
+                        {e.rateLimitRps !== null && e.rateLimitBurst !== null ? (
+                          <span className={styles.mono}>
+                            {e.rateLimitRps}/s · burst {e.rateLimitBurst}
+                          </span>
                         ) : (
                           <span className={styles.muted}>—</span>
                         )}
