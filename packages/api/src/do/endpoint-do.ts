@@ -379,7 +379,12 @@ async function loadRateGate(
   // time filter. Shard membership can't be expressed in SQL (SHA-256 isn't
   // a SQLite function), so we filter null vs non-null in the WHERE and
   // recompute per-key shard in code.
+  //
+  // The upper bound (attempted_at <= now) makes the replay window
+  // well-defined even under DO migration with sub-second NTP skew —
+  // computeTokens assumes every timestamp is in [windowStart, now].
   const windowStart = new Date(now - bucketWindowMs(rate, burst));
+  const windowEnd = new Date(now);
   const rows = await db
     .select({
       attemptedAt: deliveryAttempts.attemptedAt,
@@ -391,6 +396,7 @@ async function loadRateGate(
       and(
         eq(events.endpointId, endpoint.id),
         gte(deliveryAttempts.attemptedAt, windowStart),
+        lte(deliveryAttempts.attemptedAt, windowEnd),
         shard === null ? isNull(events.orderingKey) : isNotNull(events.orderingKey),
       ),
     );
