@@ -7,6 +7,12 @@ project invariants live here. Read them before writing a line.
 Inherits all root and `packages/api` rules. The rules below are stricter because the
 failure modes are quiet — code that looks fine but corrupts delivery guarantees.
 
+> **v2 has shipped.** This file is the v1 build record and its four invariants still
+> hold. What changed: delivery now also runs on sharded sub-DOs (ordered delivery), a
+> coordinator `SchedulerDO` gates each delivery (fair scheduling), and the DO carries a
+> per-endpoint rate limiter and circuit breaker. See HOOKLINE.md §7 and the code, and
+> defer to them where they differ.
+
 ## The delivery loop (what the DO does)
 
 1. The ingestion API (or the reconciliation cron) pokes the DO via `fetch()` with an
@@ -70,9 +76,10 @@ failure modes are quiet — code that looks fine but corrupts delivery guarantee
 - `alarm()` can be retried by the platform if it throws. Make it safe to run twice: loading
   due events from D1 and re-checking status before delivering keeps it idempotent. Don't
   assume `alarm()` runs exactly once.
-- The DO must remain addressable per-endpoint via `idFromName(endpointId)`. Don't store
-  cross-endpoint state — v2's ordering and per-endpoint breaker assume one DO owns exactly
-  one endpoint.
+- DOs are addressed by `endpointDoName(endpointId, shard)` (see `sharding.ts`): the bare
+  DO for null-key events, and one sub-DO per shard for ordered same-key events. Don't store
+  cross-endpoint state — a DO owns exactly one endpoint (or one of its shards). The
+  per-endpoint breaker state is shared across those DOs via D1 CAS, not DO storage.
 
 ## Testing this folder
 

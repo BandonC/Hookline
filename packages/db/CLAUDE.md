@@ -5,6 +5,11 @@ and the dashboard import from here. This package has **no runtime dependencies o
 own** beyond `drizzle-orm` — keep it that way so the dashboard can import its types
 without pulling in Worker code.
 
+> **v2 has shipped.** This file is the v1 build record. For what exists now (the
+> `tenants` table, `ordering_key`, the rate-limit and circuit-breaker columns, and
+> the extra indexes) see `schema.ts` and HOOKLINE.md §7, and defer to the code where
+> they differ.
+
 Inherits all root rules. Scope-specific rules below.
 
 ## This package is the single source of truth for the data model
@@ -30,8 +35,9 @@ Inherits all root rules. Scope-specific rules below.
 - `events.status` is a strict enum: `pending` / `delivered` / `failed`. No other values.
 - `events.attempt_count` and `events.next_attempt_at` drive the Durable Object's
   scheduling. `next_attempt_at` is nullable (null = not currently scheduled).
-- `endpoints.ordered` exists for v2 and defaults to `false`. It is present so v2 needs no
-  migration, but **v1 code must not branch on it.** Leave it alone.
+- `endpoints.ordered` defaults to `false` and opts an endpoint into ordered delivery.
+  v1 didn't branch on it; v2 does — same-key events route to a sub-DO via consistent
+  hashing. It was present from v1 so enabling v2 ordering needed no migration.
 - There is an index on `(status, next_attempt_at)` because the reconciliation cron queries
   pending events by due time. If you change how the cron queries, reconsider the index —
   don't leave an unused index or query an unindexed path.

@@ -4,6 +4,11 @@ The Cloudflare Worker: ingestion API (Hono), the reconciliation cron (`scheduled
 handler), and the per-endpoint Durable Object. The DO has its own deeper rules in
 `src/do/CLAUDE.md` — read that before touching delivery logic.
 
+> **v2 has shipped.** This file is the v1 build record. The Worker now also serves the
+> tenant routes and the `PATCH /v1/endpoints` config route, binds a coordinator
+> `SchedulerDO` alongside `ENDPOINT_DO`, and shards delivery onto sub-DOs. See
+> HOOKLINE.md §7 and the code, and defer to them where they differ.
+
 Inherits all root rules. Scope-specific rules below.
 
 ## Runtime is Cloudflare Workers, not Node
