@@ -8,9 +8,13 @@ This document is **context**, not build instructions. It explains what Hookline 
 why it exists, and where it is going. For *how to build it*, read the `CLAUDE.md`
 files — the root one for conventions, and the per-package ones for scope-specific rules.
 
-The build-instruction files (`CLAUDE.md`) are **v1-only on purpose**. This document
-includes v2 so the design intent is visible and v1 choices don't paint v2 into a
-corner — but nothing in v2 should be scaffolded until v1 ships.
+**Status: v1 and v2 are both shipped.** The four v2 features — ordered delivery, fair
+scheduling, per-endpoint rate limiting, and circuit-breaking retry — are built, tested,
+and deployed. This document keeps the original v1→v2 framing because the *design
+rationale* is the point: it shows why each v1 choice left room for v2 rather than
+painting it into a corner. The per-package `CLAUDE.md` files remain v1-scoped as the
+historical build guides; treat them as the record of how v1 was built, not as a ban on
+the v2 code that now exists.
 
 ---
 
@@ -83,15 +87,17 @@ v2 is built on, so v2 adds behavior to the DO rather than replacing the v1 plumb
 
 ## 5. Data model
 
-Cloudflare D1 (SQLite) via Drizzle. Four tables. The schema file is the single source of
-truth; see `packages/db/CLAUDE.md`.
+Cloudflare D1 (SQLite) via Drizzle. The schema file is the single source of truth; see
+`packages/db/CLAUDE.md`. v1 shipped four tables; v2 added `tenants` and extended
+`endpoints` / `events` with feature columns (the v2 additions are noted below).
 
 | Table | Purpose |
 | --- | --- |
-| `endpoints` | Registered targets. `id`, `url`, `signing_secret`, `description`, `ordered` (bool, present for v2 but unused in v1), `created_at`. |
-| `events` | Ingested events. `id` (idempotency key), `endpoint_id`, `payload` (JSON), `status` (pending/delivered/failed), `attempt_count`, `next_attempt_at`, `created_at`. |
+| `endpoints` | Registered targets. `id`, `tenant_id` (v2), `url`, `signing_secret`, `description`, `ordered`, `created_at`, plus v2 config columns for rate limiting and the circuit breaker. |
+| `events` | Ingested events. `id` (idempotency key), `endpoint_id`, `payload` (JSON), `status` (pending/delivered/failed), `attempt_count`, `next_attempt_at`, `created_at`, plus v2 `ordering_key` and `last_defer_reason`. |
 | `delivery_attempts` | One row per attempt. `id`, `event_id`, `attempt_number`, `status_code`, `response_snippet` (capped 1KB), `latency_ms`, `attempted_at`. |
 | `dead_letters` | Events that exhausted retries. `event_id`, `failed_at`, `final_error`. |
+| `tenants` (v2) | Unit of fairness. `id`, `name`, `weight`, `max_in_flight`, `created_at`. Endpoints belong to one tenant; the coordinator DO meters delivery per tenant. |
 
 ## 6. v1 scope (build this)
 
@@ -108,13 +114,14 @@ In scope:
 - Reconciliation cron — low-frequency backstop that re-pokes DOs for stuck `pending` events.
 - Minimal read-only dashboard.
 
-Explicitly out of v1 (see section 7): ordered delivery, fair scheduling, circuit
-breaking, per-endpoint rate limiting. Documented as planned; not built.
+Held out of the v1 milestone (now shipped in v2 — see section 7): ordered delivery, fair
+scheduling, circuit breaking, per-endpoint rate limiting.
 
-## 7. v2 vision (DO NOT build yet — context only)
+## 7. v2 (shipped)
 
-All four v2 features live on the same per-endpoint Durable Objects v1 already uses, so
-v2 adds zero infrastructure and zero cost.
+All four v2 features build on the same per-endpoint Durable Objects v1 already uses (fair
+scheduling adds one shared coordinator DO), so v2 adds effectively zero infrastructure and
+stays within the free tier.
 
 - **Ordered delivery (centerpiece)** — opt-in `ordered` flag per endpoint, plus an
   `ordering_key` carried on each event. Events sharing `(endpoint, ordering_key)` deliver
@@ -125,12 +132,20 @@ v2 adds zero infrastructure and zero cost.
   dead-letters on retry exhaustion (the existing at-least-once path), then the queue
   advances; other keys keep flowing. The exposed tradeoff: per-key throughput is capped at
   one in-flight delivery — chatty keys cap there, the rest of the endpoint doesn't.
-- **Fair scheduling** — deficit / weighted round-robin across tenants plus per-tenant
-  credits, so one noisy tenant can't starve others.
-- **Per-endpoint rate limiting** — token bucket / sliding window on outbound delivery so
-  Hookline never floods a receiver beyond its capacity.
-- **Circuit-breaking adaptive retry** — per-endpoint closed to open to half-open state
-  machine driven by a rolling-window failure rate, replacing fixed-schedule backoff.
+- **Fair scheduling** — endpoints belong to **tenants**, and a single coordinator Durable
+  Object meters every delivery so one noisy tenant can't exhaust the shared Cloudflare
+  subrequest / D1 budget the others depend on. The real starvation risk under per-endpoint
+  DOs isn't queue order (DOs are already isolated) — it's shared platform capacity, so the
+  fix is **per-tenant in-flight concurrency caps** with **weighted, idle-accruing credits**
+  (deficit-round-robin in spirit, applied to slots rather than queue position). Each DO
+  acquires a slot before `deliver()` and releases it after; the coordinator fails **open**
+  with logging, because at-least-once is sacred and fairness is not.
+- **Per-endpoint rate limiting** — token bucket on outbound delivery so Hookline never
+  floods a receiver beyond its capacity. Defer-not-drop: a throttled event waits, it is
+  never failed for being rate-limited.
+- **Circuit-breaking adaptive retry** — per-endpoint closed → open → half-open state
+  machine driven by a rolling-window failure rate, replacing fixed-schedule backoff while
+  the breaker is open. Shared across an endpoint's bare DO and sub-DOs via D1 CAS.
 
 ## 8. Tech stack
 
