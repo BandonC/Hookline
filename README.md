@@ -9,6 +9,8 @@ server actually receiving it — signing, retries, failure isolation, and delive
 
 [![CI](https://github.com/BandonC/Hookline/actions/workflows/ci.yml/badge.svg)](https://github.com/BandonC/Hookline/actions/workflows/ci.yml)
 
+**[Live dashboard](https://hookline-dashboard.bandon.workers.dev)** — read-only, no login (seeded demo data).
+
 Cloudflare-native, TypeScript end-to-end, and it runs at **$0/month** on free-tier primitives —
 no managed queue. The delivery scheduler is built in-house on Durable Object alarms.
 
@@ -150,15 +152,26 @@ and dedupe on the event ID (delivery is at-least-once).
 
 ## Dashboard
 
-A read-only view of endpoints, recent deliveries, per-event attempt history, and dead-lettered
-events. It's gated by HTTP Basic Auth and never surfaces signing secrets.
+A read-only view of delivery state. It's gated by HTTP Basic Auth, reads the same D1 the API
+writes, and never surfaces signing secrets.
 
-![Hookline dashboard — Overview](./docs/dashboard-overview.png)
+The endpoints table shows each registered target with its per-endpoint config at a glance —
+ordering, rate limit, and circuit-breaker state (here `ep_orders` runs a rate limit *and* a
+breaker, while `ep_analytics` is tripped **Open** after failing). These features compose; an
+endpoint can use any combination.
 
-The Dead Letters page surfaces events that exhausted retries — at-least-once means they
-land here rather than being silently dropped.
+![Hookline dashboard — endpoints](./docs/dashboard-endpoints.png)
 
-![Dead letters page](./docs/dashboard-dead-letters.png)
+Recent deliveries are grouped by tenant, so you can see fair scheduling at work: a noisy tenant's
+backlog doesn't push another tenant's events down the queue. Each row links to its full
+per-attempt history.
+
+![Hookline dashboard — recent deliveries](./docs/dashboard-deliveries.png)
+
+The Dead Letters page surfaces events that exhausted their retries — at-least-once means they
+land here with a final error rather than being silently dropped.
+
+![Hookline dashboard — dead letters](./docs/dashboard-dead-letters.png)
 
 ## Deployment
 
