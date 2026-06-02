@@ -2,9 +2,10 @@ import { env } from "cloudflare:test";
 import { describe, it, expect, beforeEach, vi, afterEach } from "vitest";
 import { drizzle } from "drizzle-orm/d1";
 import { eq } from "drizzle-orm";
-import { endpoints, events, deliveryAttempts } from "@hookline/db";
-import type { Endpoint } from "@hookline/db";
+import { endpoints, events, tenants, deliveryAttempts } from "@hookline/db";
+import type { Endpoint, Tenant } from "@hookline/db";
 import { alarmUnordered } from "./endpoint-do";
+import { alwaysGrantSchedulerClient } from "../scheduler-client";
 
 // Real D1 (Miniflare) + production schema. Drives alarmUnordered against
 // seeded breaker state + attempt history. fetch is stubbed per test so we
@@ -12,6 +13,13 @@ import { alarmUnordered } from "./endpoint-do";
 // setAlarm.
 
 const db = drizzle(env.DB);
+
+// ten_default is seeded by migration 0006 and never deleted by per-test
+// cleanup, so one fetch is enough for the whole suite. These tests exercise
+// breaker semantics; the tenant gate is transparently always-grant.
+const defaultTenant: Tenant = (
+  await db.select().from(tenants).where(eq(tenants.id, "ten_default")).limit(1)
+)[0]!;
 
 beforeEach(async () => {
   await env.DB.exec("DELETE FROM dead_letters");
@@ -129,7 +137,7 @@ describe("alarmUnordered + breaker: open state defers all", () => {
     await seedEvent({ id: "evt_2", endpointId: endpoint.id, nextAttemptAt: new Date(now - 200) });
 
     const { storage, getAlarm } = fakeStorage();
-    await alarmUnordered(db, endpoint, storage);
+    await alarmUnordered(db, endpoint, defaultTenant, alwaysGrantSchedulerClient, storage);
 
     // No fetches happened.
     expect((globalThis.fetch as unknown as ReturnType<typeof vi.fn>).mock.calls).toHaveLength(0);
@@ -152,7 +160,7 @@ describe("alarmUnordered + breaker: open state defers all", () => {
     await seedEvent({ id: "evt_x", endpointId: endpoint.id, nextAttemptAt: new Date(now - 100) });
 
     const { storage } = fakeStorage();
-    await alarmUnordered(db, endpoint, storage);
+    await alarmUnordered(db, endpoint, defaultTenant, alwaysGrantSchedulerClient, storage);
 
     expect((globalThis.fetch as unknown as ReturnType<typeof vi.fn>).mock.calls).toHaveLength(1);
     expect(await lastDeferReason("evt_x")).toBeNull();
@@ -178,7 +186,7 @@ describe("alarmUnordered + breaker: closed→open trip", () => {
     }
 
     const { storage } = fakeStorage();
-    await alarmUnordered(db, endpoint, storage);
+    await alarmUnordered(db, endpoint, defaultTenant, alwaysGrantSchedulerClient, storage);
 
     expect((globalThis.fetch as unknown as ReturnType<typeof vi.fn>).mock.calls).toHaveLength(4);
     const row = await endpointRow(endpoint.id);
@@ -206,7 +214,7 @@ describe("alarmUnordered + breaker: closed→open trip", () => {
     }
 
     const { storage, getAlarm } = fakeStorage();
-    await alarmUnordered(db, endpoint, storage);
+    await alarmUnordered(db, endpoint, defaultTenant, alwaysGrantSchedulerClient, storage);
 
     const calls = (globalThis.fetch as unknown as ReturnType<typeof vi.fn>).mock.calls.length;
     expect(calls).toBe(5);
@@ -270,7 +278,7 @@ describe("alarmUnordered + breaker: closed→open trip", () => {
     await seedEvent({ id: "evt_now", endpointId: endpoint.id, nextAttemptAt: new Date(now - 100) });
 
     const { storage } = fakeStorage();
-    await alarmUnordered(db, endpoint, storage);
+    await alarmUnordered(db, endpoint, defaultTenant, alwaysGrantSchedulerClient, storage);
 
     expect((globalThis.fetch as unknown as ReturnType<typeof vi.fn>).mock.calls).toHaveLength(1);
     const row = await endpointRow(endpoint.id);
@@ -297,7 +305,7 @@ describe("alarmUnordered + breaker: half-open trial", () => {
     await seedEvent({ id: "evt_held", endpointId: endpoint.id, nextAttemptAt: new Date(now - 400) });
 
     const { storage } = fakeStorage();
-    await alarmUnordered(db, endpoint, storage);
+    await alarmUnordered(db, endpoint, defaultTenant, alwaysGrantSchedulerClient, storage);
 
     // Exactly ONE fetch — the trial event.
     expect((globalThis.fetch as unknown as ReturnType<typeof vi.fn>).mock.calls).toHaveLength(1);
@@ -323,7 +331,7 @@ describe("alarmUnordered + breaker: half-open trial", () => {
     await seedEvent({ id: "evt_trial_fail", endpointId: endpoint.id, nextAttemptAt: new Date(now - 500) });
 
     const { storage } = fakeStorage();
-    await alarmUnordered(db, endpoint, storage);
+    await alarmUnordered(db, endpoint, defaultTenant, alwaysGrantSchedulerClient, storage);
 
     expect((globalThis.fetch as unknown as ReturnType<typeof vi.fn>).mock.calls).toHaveLength(1);
     const row = await endpointRow(endpoint.id);
@@ -346,7 +354,7 @@ describe("alarmUnordered + breaker: half-open trial", () => {
     // nothing to send, and must CAS back to open with a fresh open_until.
 
     const { storage } = fakeStorage();
-    await alarmUnordered(db, endpoint, storage);
+    await alarmUnordered(db, endpoint, defaultTenant, alwaysGrantSchedulerClient, storage);
 
     expect((globalThis.fetch as unknown as ReturnType<typeof vi.fn>).mock.calls).toHaveLength(0);
     const row = await endpointRow(endpoint.id);
@@ -377,7 +385,7 @@ describe("alarmUnordered + breaker: CAS race", () => {
     await seedEvent({ id: "evt_race", endpointId: endpoint.id, nextAttemptAt: new Date(now - 500) });
 
     const { storage, getAlarm } = fakeStorage();
-    await alarmUnordered(db, endpoint, storage);
+    await alarmUnordered(db, endpoint, defaultTenant, alwaysGrantSchedulerClient, storage);
 
     // The "loser" never fetches. The event is deferred.
     expect((globalThis.fetch as unknown as ReturnType<typeof vi.fn>).mock.calls).toHaveLength(0);

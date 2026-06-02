@@ -50,6 +50,7 @@ const asDb = (mock: MockDb) => mock as unknown as Parameters<typeof deliver>[0];
 
 const endpoint: Endpoint = {
   id: "ep_test",
+  tenantId: "ten_default",
   url: "https://receiver.example/hook",
   signingSecret: "whsec_test_secret",
   description: null,

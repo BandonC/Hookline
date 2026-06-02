@@ -7,7 +7,12 @@ import { HTTPException } from "hono/http-exception";
 import { drizzle } from "drizzle-orm/d1";
 import { and, eq, isNull } from "drizzle-orm";
 import { nanoid } from "nanoid";
-import { endpoints as endpointsTable, events as eventsTable, type Endpoint } from "@hookline/db";
+import {
+  endpoints as endpointsTable,
+  events as eventsTable,
+  tenants as tenantsTable,
+  type Endpoint,
+} from "@hookline/db";
 import type { Bindings } from "../bindings";
 import { requireAdmin } from "../auth";
 import { parseSafeEndpointUrl } from "../ssrf";
@@ -26,11 +31,31 @@ endpoints.post("/", async (c) => {
 
   const url = parseSafeEndpointUrl(body.url);
   const description = parseDescription(body.description);
+  const tenantId = parseTenantId(body.tenant_id);
 
   const db = drizzle(c.env.DB);
+
+  // FK is enforced application-side because SQLite FKs aren't on by default
+  // and we want a clear 400 ("unknown tenant") rather than a generic
+  // constraint error swallowed by HTTPException.
+  const [tenant] = await db
+    .select({ id: tenantsTable.id })
+    .from(tenantsTable)
+    .where(eq(tenantsTable.id, tenantId))
+    .limit(1);
+  if (!tenant) {
+    throw new HTTPException(400, { message: "tenant_id refers to an unknown tenant" });
+  }
+
   const [row] = await db
     .insert(endpointsTable)
-    .values({ id: `ep_${nanoid()}`, url, signingSecret: generateSigningSecret(), description })
+    .values({
+      id: `ep_${nanoid()}`,
+      tenantId,
+      url,
+      signingSecret: generateSigningSecret(),
+      description,
+    })
     .returning();
 
   return c.json({ ...toPublic(row), signing_secret: row.signingSecret }, 201);
@@ -320,6 +345,16 @@ function generateSigningSecret(): string {
   return `whsec_${hex}`;
 }
 
+// Required at creation. Format is the tenant_<nanoid> id; we don't validate
+// the prefix here (the FK lookup will reject anything that isn't a known
+// tenant), only that it's a non-empty string.
+function parseTenantId(value: unknown): string {
+  if (typeof value !== "string" || value.length === 0) {
+    throw new HTTPException(400, { message: "tenant_id is required" });
+  }
+  return value;
+}
+
 function parseDescription(value: unknown): string | null {
   if (value === undefined || value === null) return null;
   if (typeof value !== "string") {
@@ -332,6 +367,7 @@ function parseDescription(value: unknown): string | null {
 // even loaded into memory on list/read.
 const publicColumns = {
   id: endpointsTable.id,
+  tenantId: endpointsTable.tenantId,
   url: endpointsTable.url,
   description: endpointsTable.description,
   ordered: endpointsTable.ordered,
@@ -349,6 +385,7 @@ const publicColumns = {
 type PublicEndpoint = Pick<
   Endpoint,
   | "id"
+  | "tenantId"
   | "url"
   | "description"
   | "ordered"
@@ -366,6 +403,7 @@ type PublicEndpoint = Pick<
 function toPublic(e: PublicEndpoint) {
   return {
     id: e.id,
+    tenant_id: e.tenantId,
     url: e.url,
     description: e.description,
     ordered: e.ordered,

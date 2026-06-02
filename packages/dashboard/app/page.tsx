@@ -145,6 +145,7 @@ export default async function Home() {
                 <thead>
                   <tr>
                     <th>Event</th>
+                    <th>Tenant</th>
                     <th>Endpoint</th>
                     <th>Status</th>
                     <th className={styles.num}>Attempts</th>
@@ -163,6 +164,11 @@ export default async function Home() {
                         >
                           {e.id}
                         </Link>
+                      </td>
+                      <td>
+                        <span className={`${styles.mono} ${styles.truncate}`} title={e.tenantId}>
+                          {e.tenantId}
+                        </span>
                       </td>
                       <td>
                         <span className={`${styles.mono} ${styles.truncate}`} title={e.endpointId}>
