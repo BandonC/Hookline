@@ -11,3 +11,9 @@ NEXTJS_ENV=development
 # `wrangler secret put DASHBOARD_BASIC_AUTH` on the hookline-dashboard Worker;
 # locally it loads from .dev.vars. Use ASCII; pick a long, random password.
 DASHBOARD_BASIC_AUTH=admin:local-dev-change-me
+
+# Optional public-demo opt-out. When set to "true", the Basic Auth gate is
+# skipped and the dashboard is publicly readable with no login — used for the
+# portfolio demo deployment (seeded data only, no secrets exposed). Leave unset
+# for any real deployment so the auth gate stays on (fail-closed default).
+# DASHBOARD_PUBLIC=true

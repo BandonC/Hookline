@@ -28,6 +28,15 @@ export async function middleware(req: NextRequest) {
   // sync form is only guaranteed inside a request handler, and OpenNext does
   // not document the middleware context — so don't rely on it here.
   const { env } = await getCloudflareContext({ async: true });
+
+  // Public-demo opt-out: when DASHBOARD_PUBLIC === "true", skip the gate so the
+  // deployment is open with no login. Used for the portfolio demo, which holds
+  // only seeded data and exposes no signing secrets. The auth path below stays
+  // intact for any deployment that doesn't set the flag (fail-closed default).
+  if (env.DASHBOARD_PUBLIC === "true") {
+    return NextResponse.next();
+  }
+
   const expected = env.DASHBOARD_BASIC_AUTH;
 
   const header = req.headers.get("authorization") ?? "";
