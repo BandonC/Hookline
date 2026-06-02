@@ -16,16 +16,27 @@ database_id = "368382b0-2191-4b64-abcc-88d4d7a990b1"
 migrations_dir = "../db/migrations"
 
 # ── Per-endpoint Durable Object ───────────────────────────────
-# Scheduling + delivery in v1; ordering/fairness/breaker in v2.
+# Scheduling + delivery in v1; ordering/breaker in v2.
 [[durable_objects.bindings]]
 name = "ENDPOINT_DO"
 class_name = "EndpointDO"
+
+# ── Coordinator Durable Object (v2 fair scheduling) ───────────
+# Single instance (idFromName("scheduler")). Per-tenant credit/in-flight
+# ledger; gates every delivery via /acquire and /release.
+[[durable_objects.bindings]]
+name = "SCHEDULER_DO"
+class_name = "SchedulerDO"
 
 # SQLite-backed DO class = the free-tier one. Do NOT use new_classes
 # (that's the paid KV-backed variant). See packages/api/CLAUDE.md.
 [[migrations]]
 tag = "v1"
 new_sqlite_classes = ["EndpointDO"]
+
+[[migrations]]
+tag = "v2-scheduler"
+new_sqlite_classes = ["SchedulerDO"]
 
 # ── Reconciliation cron (at-least-once backstop, NOT primary delivery) ──
 # Low frequency on purpose. Re-pokes DOs for stuck `pending` events.

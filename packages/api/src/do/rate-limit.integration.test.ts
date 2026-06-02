@@ -2,10 +2,11 @@ import { env } from "cloudflare:test";
 import { describe, it, expect, beforeEach, vi, afterEach } from "vitest";
 import { drizzle } from "drizzle-orm/d1";
 import { asc, eq } from "drizzle-orm";
-import { endpoints, events, deliveryAttempts } from "@hookline/db";
-import type { Endpoint } from "@hookline/db";
+import { endpoints, events, tenants, deliveryAttempts } from "@hookline/db";
+import type { Endpoint, Tenant } from "@hookline/db";
 import { alarmOrdered, alarmUnordered } from "./endpoint-do";
 import { computeShard } from "../sharding";
+import { alwaysGrantSchedulerClient } from "../scheduler-client";
 
 // Real D1 (Miniflare) + the production schema. Drives alarmUnordered /
 // alarmOrdered with seeded attempt history so the bucket has a known fill.
@@ -13,6 +14,13 @@ import { computeShard } from "../sharding";
 // captures setAlarm so we can assert the defer time.
 
 const db = drizzle(env.DB);
+
+// Loaded once: ten_default survives per-test cleanup. Rate-limit tests
+// pass it through with an always-grant scheduler so the tenant gate is
+// transparent.
+const defaultTenant: Tenant = (
+  await db.select().from(tenants).where(eq(tenants.id, "ten_default")).limit(1)
+)[0]!;
 
 beforeEach(async () => {
   // events references endpoints; delivery_attempts references events.
@@ -115,7 +123,7 @@ describe("alarmUnordered + rate limit (real D1)", () => {
     await seedEvent({ id: "evt_b", endpointId: endpoint.id, nextAttemptAt: new Date(now - 1000) });
 
     const { storage } = fakeStorage();
-    await alarmUnordered(db, endpoint, storage);
+    await alarmUnordered(db, endpoint, defaultTenant, alwaysGrantSchedulerClient, storage);
 
     // Both delivered (one fetch each), neither carries a defer reason.
     expect((globalThis.fetch as unknown as ReturnType<typeof vi.fn>).mock.calls).toHaveLength(2);
@@ -143,7 +151,7 @@ describe("alarmUnordered + rate limit (real D1)", () => {
     await seedEvent({ id: "evt_due", endpointId: endpoint.id, nextAttemptAt: new Date(now - 500) });
 
     const { storage, getAlarm } = fakeStorage();
-    await alarmUnordered(db, endpoint, storage);
+    await alarmUnordered(db, endpoint, defaultTenant, alwaysGrantSchedulerClient, storage);
 
     expect((globalThis.fetch as unknown as ReturnType<typeof vi.fn>).mock.calls).toHaveLength(0);
     expect(await lastDeferReason("evt_due")).toBe("rate_limited");
@@ -167,7 +175,7 @@ describe("alarmUnordered + rate limit (real D1)", () => {
     }
 
     const { storage } = fakeStorage();
-    await alarmUnordered(db, endpoint, storage);
+    await alarmUnordered(db, endpoint, defaultTenant, alwaysGrantSchedulerClient, storage);
 
     // 3 delivered, 4th deferred.
     expect((globalThis.fetch as unknown as ReturnType<typeof vi.fn>).mock.calls).toHaveLength(3);
@@ -189,7 +197,7 @@ describe("alarmUnordered + rate limit (real D1)", () => {
       .where(eq(events.id, "evt_was_throttled"));
 
     const { storage } = fakeStorage();
-    await alarmUnordered(db, endpoint, storage);
+    await alarmUnordered(db, endpoint, defaultTenant, alwaysGrantSchedulerClient, storage);
 
     expect(await lastDeferReason("evt_was_throttled")).toBeNull();
   });
@@ -235,7 +243,7 @@ describe("alarmOrdered + rate limit (real D1)", () => {
     });
 
     const { storage, getAlarm } = fakeStorage();
-    await alarmOrdered(db, endpoint, shard, storage);
+    await alarmOrdered(db, endpoint, defaultTenant, alwaysGrantSchedulerClient, shard, storage);
 
     expect((globalThis.fetch as unknown as ReturnType<typeof vi.fn>).mock.calls).toHaveLength(0);
     expect(await lastDeferReason("evt_head")).toBe("rate_limited");
@@ -295,12 +303,12 @@ describe("alarmOrdered + rate limit (real D1)", () => {
 
     // Shard A: dry, defers.
     const a = fakeStorage();
-    await alarmOrdered(db, endpoint, shardA, a.storage);
+    await alarmOrdered(db, endpoint, defaultTenant, alwaysGrantSchedulerClient, shardA, a.storage);
     expect(await lastDeferReason("evt_a_head")).toBe("rate_limited");
 
     // Shard B: full bucket (no prior attempts on shard B), delivers.
     const b = fakeStorage();
-    await alarmOrdered(db, endpoint, shardB, b.storage);
+    await alarmOrdered(db, endpoint, defaultTenant, alwaysGrantSchedulerClient, shardB, b.storage);
     expect(await lastDeferReason("evt_b_head")).toBeNull();
     // Delivered: status flipped to delivered.
     const [bRow] = await db.select({ s: events.status }).from(events).where(eq(events.id, "evt_b_head")).limit(1);
@@ -322,7 +330,7 @@ describe("alarmOrdered + rate limit (real D1)", () => {
     });
 
     const { storage } = fakeStorage();
-    await alarmOrdered(db, endpoint, shard, storage);
+    await alarmOrdered(db, endpoint, defaultTenant, alwaysGrantSchedulerClient, shard, storage);
 
     expect((globalThis.fetch as unknown as ReturnType<typeof vi.fn>).mock.calls).toHaveLength(1);
     expect(await lastDeferReason("evt_ord")).toBeNull();
@@ -363,7 +371,7 @@ describe("rate gate shard scoping (real D1)", () => {
     });
 
     const { storage } = fakeStorage();
-    await alarmUnordered(db, endpoint, storage);
+    await alarmUnordered(db, endpoint, defaultTenant, alwaysGrantSchedulerClient, storage);
 
     expect((globalThis.fetch as unknown as ReturnType<typeof vi.fn>).mock.calls).toHaveLength(1);
     expect(await lastDeferReason("evt_bare")).toBeNull();

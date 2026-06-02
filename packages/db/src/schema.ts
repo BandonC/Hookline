@@ -1,8 +1,31 @@
 import { sqliteTable, text, integer, index } from "drizzle-orm/sqlite-core";
 import { sql } from "drizzle-orm";
 
+// v2 fair scheduling: the unit of fairness. Endpoints belong to exactly one
+// tenant; events inherit their tenant via endpoint join. `weight` drives DRR
+// credit accrual in the coordinator DO; `max_in_flight` is an optional per-
+// tenant override of the code default. Default tenant row (`ten_default`)
+// is inserted by the migration to satisfy the non-null FK on existing rows.
+export const tenants = sqliteTable("tenants", {
+  id: text("id").primaryKey(),                 // ten_<nanoid>
+  name: text("name").notNull(),
+  weight: integer("weight").notNull().default(1),
+  maxInFlight: integer("max_in_flight"),       // null = use code default
+  createdAt: integer("created_at", { mode: "timestamp_ms" })
+    .notNull().default(sql`(unixepoch() * 1000)`),
+});
+
+export const DEFAULT_TENANT_ID = "ten_default";
+
 export const endpoints = sqliteTable("endpoints", {
   id: text("id").primaryKey(),                 // ep_<nanoid>
+  // v2 fair scheduling: every endpoint belongs to a tenant. Non-null with a
+  // DB-level default of `ten_default` so the SQLite ALTER TABLE ADD COLUMN
+  // can succeed against pre-migration rows; new endpoints always supply
+  // tenant_id explicitly at the POST /v1/endpoints route, so the default
+  // never fires in steady-state.
+  tenantId: text("tenant_id").notNull().default(DEFAULT_TENANT_ID)
+    .references(() => tenants.id),
   url: text("url").notNull(),
   signingSecret: text("signing_secret").notNull(), // plaintext; generated at creation, shown once
   description: text("description"),
@@ -48,7 +71,7 @@ export const events = sqliteTable("events", {
   // bucket dry), record WHY. Cleared in every deliver() batch so it always
   // reflects the most recent scheduling decision. Enum widens for v2's
   // circuit breaker + fair scheduling later.
-  lastDeferReason: text("last_defer_reason", { enum: ["rate_limited", "breaker_open"] }),
+  lastDeferReason: text("last_defer_reason", { enum: ["rate_limited", "breaker_open", "tenant_throttled"] }),
   createdAt: integer("created_at", { mode: "timestamp_ms" })
     .notNull().default(sql`(unixepoch() * 1000)`),
 }, (t) => ({
@@ -85,6 +108,7 @@ export const deadLetters = sqliteTable("dead_letters", {
   finalError: text("final_error"),
 });
 
+export type Tenant = typeof tenants.$inferSelect;
 export type Endpoint = typeof endpoints.$inferSelect;
 export type Event = typeof events.$inferSelect;
 export type DeliveryAttempt = typeof deliveryAttempts.$inferSelect;

@@ -1,8 +1,8 @@
 import { drizzle } from "drizzle-orm/d1";
 import { and, asc, eq, gte, isNotNull, isNull, lte } from "drizzle-orm";
 import { nanoid } from "nanoid";
-import { endpoints, events, deliveryAttempts, deadLetters } from "@hookline/db";
-import type { Endpoint, Event } from "@hookline/db";
+import { endpoints, events, tenants, deliveryAttempts, deadLetters } from "@hookline/db";
+import type { Endpoint, Event, Tenant } from "@hookline/db";
 import { computeBackoff } from "../backoff";
 import { signPayload } from "../signing";
 import { computeShard } from "../sharding";
@@ -17,12 +17,19 @@ import {
   BREAKER_THRESHOLD_PCT_DEFAULT,
   type AttemptSample,
 } from "../circuit-breaker";
+import { makeSchedulerClient, type SchedulerClient } from "../scheduler-client";
 
 const MAX_ATTEMPTS = 6;
 const REQUEST_TIMEOUT_MS = 10_000;
 const RESPONSE_SNIPPET_CAP = 1024; // 1KB — enforced during the read, never read-then-slice
 
-type Env = { DB: D1Database; ENDPOINT_DO: DurableObjectNamespace };
+type Env = {
+  DB: D1Database;
+  ENDPOINT_DO: DurableObjectNamespace;
+  // v2 fair scheduling. The DO calls this before every deliver() and
+  // releases after — see scheduler-client.ts.
+  SCHEDULER_DO: DurableObjectNamespace;
+};
 
 // Per-endpoint Durable Object: scheduler + delivery worker.
 // One instance per endpoint (idFromName(endpointId)). See ./CLAUDE.md for the
@@ -90,10 +97,31 @@ export class EndpointDO {
       .limit(1);
     if (!endpoint) return; // endpoint deleted out from under us — nothing to deliver
 
+    // v2 fair scheduling: every endpoint belongs to exactly one tenant
+    // (non-null FK, app-level validated at POST /v1/endpoints). The tenant
+    // row carries weight + max_in_flight which the coordinator needs to
+    // make per-tenant decisions; we pass them in on every acquire so the
+    // coordinator never touches D1.
+    const [tenant] = await db
+      .select()
+      .from(tenants)
+      .where(eq(tenants.id, endpoint.tenantId))
+      .limit(1);
+    if (!tenant) {
+      // Impossible by construction (tenant delete is refused while
+      // endpoints reference it). Log and bail — fail-open on a missing
+      // tenant would imply unknown fairness state, which is worse than
+      // a delayed delivery the reconciliation cron will eventually retry.
+      console.error("alarm: tenant missing for endpoint", endpoint.id, endpoint.tenantId);
+      return;
+    }
+
+    const scheduler = makeSchedulerClient(this.env.SCHEDULER_DO);
+
     if (typeof shard === "number") {
-      await alarmOrdered(db, endpoint, shard, this.state.storage);
+      await alarmOrdered(db, endpoint, tenant, scheduler, shard, this.state.storage);
     } else {
-      await alarmUnordered(db, endpoint, this.state.storage);
+      await alarmUnordered(db, endpoint, tenant, scheduler, this.state.storage);
     }
   }
 }
@@ -103,12 +131,15 @@ export class EndpointDO {
 // from racing with sub-DOs on the same endpoint (Model C invariant): null-key
 // events live here, non-null-key events live on sub-DOs.
 //
-// Gate order (Decision I): breaker → due+owned → rate limit. Breaker is
-// per-endpoint state; rate-limit bucket is per-shard. No delivery_attempts
-// row is written on a defer of either kind.
+// Gate order: breaker → due+owned → rate-limit → tenant slot. Breaker is
+// per-endpoint state; rate-limit bucket is per-shard; tenant slot is
+// cross-tenant (coordinator DO). No delivery_attempts row is written on
+// a defer of any kind.
 export async function alarmUnordered(
   db: ReturnType<typeof drizzle>,
   endpoint: Endpoint,
+  tenant: Tenant,
+  scheduler: SchedulerClient,
   storage: DurableObjectState["storage"],
 ): Promise<void> {
   const now = Date.now();
@@ -146,7 +177,31 @@ export async function alarmUnordered(
       return; // no work to re-arm to
     }
     const trial = due[0]!;
-    const { delivered } = await deliver(db, trial, endpoint);
+    // Tenant gate still applies to the trial: it's a real outbound delivery
+    // and consumes the same shared capacity. If denied, release the
+    // half-open lock so another tick can retry once capacity frees,
+    // mark the event tenant_throttled, and re-arm to the retry hint.
+    const trialAck = await scheduler.acquire({
+      tenantId: tenant.id,
+      weight: tenant.weight,
+      maxInFlight: tenant.maxInFlight,
+      endpointId: endpoint.id,
+      eventId: trial.id,
+    });
+    if (!trialAck.granted) {
+      await tryCasHalfOpenToOpen(db, endpoint.id, now, breaker.openMs);
+      await deferForTenantThrottle(db, storage, trial, trialAck.retryAfterMs, now);
+      return;
+    }
+    let delivered = false;
+    try {
+      ({ delivered } = await deliver(db, trial, endpoint));
+    } finally {
+      await scheduler.release({
+        slotToken: trialAck.slotToken,
+        outcome: delivered ? "delivered" : "failed",
+      });
+    }
     if (delivered) {
       await tryCasHalfOpenToClosed(db, endpoint.id);
     } else {
@@ -175,20 +230,44 @@ export async function alarmUnordered(
       await deferForRate(db, storage, event, gate, now);
       return;
     }
-    const { delivered } = await deliver(db, event, endpoint);
-    if (gate) gate.tokens -= 1;
+    // Tenant slot gate (after rate-limit, before deliver). Same shape as
+    // the rate-limit defer: every remaining event in this loop belongs to
+    // the same tenant on the same DO, so a deny here will deny them all —
+    // mark THIS event and abort the loop.
+    const ack = await scheduler.acquire({
+      tenantId: tenant.id,
+      weight: tenant.weight,
+      maxInFlight: tenant.maxInFlight,
+      endpointId: endpoint.id,
+      eventId: event.id,
+    });
+    if (!ack.granted) {
+      await deferForTenantThrottle(db, storage, event, ack.retryAfterMs, Date.now());
+      return;
+    }
 
-    if (breaker.kind === "closed") {
-      const obsNow = Date.now();
-      breakerSamples.push({ attemptedAt: obsNow, success: delivered });
-      const { rate, count } = failureRate(breakerSamples, BREAKER_WINDOW_MS, obsNow);
-      if (shouldTrip(rate, count, BREAKER_MIN_SAMPLES, breaker.thresholdPct)) {
-        await tryCasClosedToOpen(db, endpoint.id, obsNow, breaker.openMs);
-        // Whether we won or lost the CAS, the breaker is now open from this
-        // DO's perspective — defer the remaining due events.
-        breakerTripped = true;
-        tripReArmTo = obsNow + breaker.openMs;
+    let delivered = false;
+    try {
+      ({ delivered } = await deliver(db, event, endpoint));
+      if (gate) gate.tokens -= 1;
+
+      if (breaker.kind === "closed") {
+        const obsNow = Date.now();
+        breakerSamples.push({ attemptedAt: obsNow, success: delivered });
+        const { rate, count } = failureRate(breakerSamples, BREAKER_WINDOW_MS, obsNow);
+        if (shouldTrip(rate, count, BREAKER_MIN_SAMPLES, breaker.thresholdPct)) {
+          await tryCasClosedToOpen(db, endpoint.id, obsNow, breaker.openMs);
+          // Whether we won or lost the CAS, the breaker is now open from
+          // this DO's perspective — defer the remaining due events.
+          breakerTripped = true;
+          tripReArmTo = obsNow + breaker.openMs;
+        }
       }
+    } finally {
+      await scheduler.release({
+        slotToken: ack.slotToken,
+        outcome: delivered ? "delivered" : "failed",
+      });
     }
   }
 
@@ -243,6 +322,8 @@ async function reArmUnordered(
 export async function alarmOrdered(
   db: ReturnType<typeof drizzle>,
   endpoint: Endpoint,
+  tenant: Tenant,
+  scheduler: SchedulerClient,
   shard: number,
   storage: DurableObjectState["storage"],
 ): Promise<void> {
@@ -275,7 +356,27 @@ export async function alarmOrdered(
       return;
     }
     const trial = ownedDueHeads[0]!;
-    const { delivered } = await deliver(db, trial, endpoint);
+    const trialAck = await scheduler.acquire({
+      tenantId: tenant.id,
+      weight: tenant.weight,
+      maxInFlight: tenant.maxInFlight,
+      endpointId: endpoint.id,
+      eventId: trial.id,
+    });
+    if (!trialAck.granted) {
+      await tryCasHalfOpenToOpen(db, endpoint.id, now, breaker.openMs);
+      await deferForTenantThrottle(db, storage, trial, trialAck.retryAfterMs, now);
+      return;
+    }
+    let delivered = false;
+    try {
+      ({ delivered } = await deliver(db, trial, endpoint));
+    } finally {
+      await scheduler.release({
+        slotToken: trialAck.slotToken,
+        outcome: delivered ? "delivered" : "failed",
+      });
+    }
     if (delivered) {
       await tryCasHalfOpenToClosed(db, endpoint.id);
     } else {
@@ -301,18 +402,38 @@ export async function alarmOrdered(
       await deferForRate(db, storage, head, gate, now);
       return;
     }
-    const { delivered } = await deliver(db, head, endpoint);
-    if (gate) gate.tokens -= 1;
+    const ack = await scheduler.acquire({
+      tenantId: tenant.id,
+      weight: tenant.weight,
+      maxInFlight: tenant.maxInFlight,
+      endpointId: endpoint.id,
+      eventId: head.id,
+    });
+    if (!ack.granted) {
+      await deferForTenantThrottle(db, storage, head, ack.retryAfterMs, Date.now());
+      return;
+    }
 
-    if (breaker.kind === "closed") {
-      const obsNow = Date.now();
-      breakerSamples.push({ attemptedAt: obsNow, success: delivered });
-      const { rate, count } = failureRate(breakerSamples, BREAKER_WINDOW_MS, obsNow);
-      if (shouldTrip(rate, count, BREAKER_MIN_SAMPLES, breaker.thresholdPct)) {
-        await tryCasClosedToOpen(db, endpoint.id, obsNow, breaker.openMs);
-        breakerTripped = true;
-        tripReArmTo = obsNow + breaker.openMs;
+    let delivered = false;
+    try {
+      ({ delivered } = await deliver(db, head, endpoint));
+      if (gate) gate.tokens -= 1;
+
+      if (breaker.kind === "closed") {
+        const obsNow = Date.now();
+        breakerSamples.push({ attemptedAt: obsNow, success: delivered });
+        const { rate, count } = failureRate(breakerSamples, BREAKER_WINDOW_MS, obsNow);
+        if (shouldTrip(rate, count, BREAKER_MIN_SAMPLES, breaker.thresholdPct)) {
+          await tryCasClosedToOpen(db, endpoint.id, obsNow, breaker.openMs);
+          breakerTripped = true;
+          tripReArmTo = obsNow + breaker.openMs;
+        }
       }
+    } finally {
+      await scheduler.release({
+        slotToken: ack.slotToken,
+        outcome: delivered ? "delivered" : "failed",
+      });
     }
   }
 
@@ -550,6 +671,26 @@ async function loadRateGate(
   timestamps.sort((a, b) => a - b);
 
   return { tokens: computeTokens(timestamps, rate, burst, now), rate, burst };
+}
+
+// Defer path: the coordinator denied a slot for this event's tenant.
+// Same shape as deferForRate/setBreakerDefer — set the reason, leave
+// status/attempt_count/next_attempt_at untouched, no delivery_attempts
+// row. Re-arm to the coordinator's retry hint; the per-endpoint DO
+// returns immediately, so the rest of this tick's due events (all
+// belonging to the same tenant) wait until the next alarm.
+async function deferForTenantThrottle(
+  db: ReturnType<typeof drizzle>,
+  storage: DurableObjectState["storage"],
+  event: Event,
+  retryAfterMs: number,
+  now: number,
+): Promise<void> {
+  await db
+    .update(events)
+    .set({ lastDeferReason: "tenant_throttled" })
+    .where(eq(events.id, event.id));
+  await storage.setAlarm(now + retryAfterMs);
 }
 
 // Defer path: the bucket is dry for `event`. Mark it deferred (b1 — the

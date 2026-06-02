@@ -32,18 +32,22 @@ export async function listEndpoints() {
   return rows.map((e) => ({ ...e, pending: pendingByEndpoint.get(e.id) ?? 0 }));
 }
 
+// tenant_id is on endpoints, not events — join to surface it per-row so the
+// deliveries list shows which tenant owns each event without a second query.
 export async function recentEvents(limit = 50) {
   const db = getDb();
   return db
     .select({
       id: events.id,
       endpointId: events.endpointId,
+      tenantId: endpoints.tenantId,
       status: events.status,
       attemptCount: events.attemptCount,
       nextAttemptAt: events.nextAttemptAt,
       createdAt: events.createdAt,
     })
     .from(events)
+    .innerJoin(endpoints, eq(events.endpointId, endpoints.id))
     .orderBy(desc(events.createdAt))
     .limit(limit);
 }

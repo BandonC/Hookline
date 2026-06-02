@@ -13,8 +13,21 @@ Cloudflare-native, TypeScript end-to-end, and it runs at **$0/month** on free-ti
 no managed queue. The delivery scheduler is built in-house on Durable Object alarms.
 
 > This README is the tour. For the full design rationale — why these delivery semantics, why
-> Durable Object alarms over Cloudflare Queues, the data model, and the v2 vision — see
-> **[HOOKLINE.md](./HOOKLINE.md)**.
+> Durable Object alarms over Cloudflare Queues, the data model, and the decision log behind each
+> reliability feature — see **[HOOKLINE.md](./HOOKLINE.md)**.
+
+## What's in the box
+
+Each of these is a real feature with its own state machine and tests — not a checklist.
+
+- **At-least-once delivery** with an explicit dead-letter path for events that exhaust retries. No silent drops.
+- **HMAC-SHA256 signed payloads** over `timestamp.body`. The event ID lives inside the signed body, not in an unsigned header.
+- **Decorrelated-jitter retry backoff** computed in code (1 s base, 1 h cap), not platform retry config.
+- **Per-endpoint circuit breaker** — `closed → open → half_open` state machine on a rolling-window failure rate. CAS-arbitrated half-open trial, so only one DO at a time tests a recovering receiver.
+- **Per-endpoint rate limiting** — token-bucket gate on outbound delivery; defer-not-drop, so Hookline never floods a receiver beyond its configured capacity.
+- **Opt-in ordered delivery** — events sharing `(endpoint, ordering_key)` deliver serialized in `created_at` order via consistent hashing onto K=16 sub-DOs. Head-of-line blocking is strictly **per key**: a stuck key doesn't block any other.
+- **Per-tenant fair scheduling** — a single coordinator Durable Object gates every delivery on weighted credits + slot caps, so one noisy tenant can't monopolize shared Cloudflare capacity and starve quiet ones.
+- **Read-only dashboard** — endpoints with pending counts and breaker state, recent deliveries per tenant, per-event attempt history, and a dead-letter view.
 
 ## Architecture
 
@@ -98,18 +111,25 @@ the API needs `ADMIN_API_KEY`; the dashboard needs `DASHBOARD_BASIC_AUTH` (a `us
 
 ## API usage
 
-The endpoint-management routes are gated by `ADMIN_API_KEY` (`Authorization: Bearer …`). Event
+The endpoint and tenant routes are gated by `ADMIN_API_KEY` (`Authorization: Bearer …`). Event
 ingestion is intentionally **not** gated.
 
 ```bash
-# 1. Register a receiver. The signing secret is returned ONCE — store it.
+# 1. Create a tenant — the unit of fairness. weight is optional (default 1).
+curl -X POST https://<api-host>/v1/tenants \
+  -H "Authorization: Bearer $ADMIN_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"name":"acme","weight":5}'
+# -> 201 { "id": "ten_…", "name": "acme", "weight": 5, ... }
+
+# 2. Register a receiver under that tenant. The signing secret is returned ONCE — store it.
 curl -X POST https://<api-host>/v1/endpoints \
   -H "Authorization: Bearer $ADMIN_API_KEY" \
   -H "Content-Type: application/json" \
-  -d '{"url":"https://your-receiver.example/hook","description":"orders"}'
+  -d '{"tenant_id":"ten_…","url":"https://your-receiver.example/hook","description":"orders"}'
 # -> 201 { "id": "ep_…", "signing_secret": "whsec_…", ... }
 
-# 2. Ingest an event for that endpoint.
+# 3. Ingest an event for that endpoint.
 curl -X POST https://<api-host>/v1/events \
   -H "Content-Type: application/json" \
   -d '{"endpoint_id":"ep_…","payload":{"type":"order.created","id":123}}'

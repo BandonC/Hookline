@@ -6,6 +6,7 @@ import { events as eventsTable } from "@hookline/db";
 import type { Bindings } from "./bindings";
 import { endpoints } from "./routes/endpoints";
 import { events } from "./routes/events";
+import { tenants } from "./routes/tenants";
 import { computeShard, endpointDoName } from "./sharding";
 
 // Per-run cap on the reconciliation scan. It's a backstop, not the primary path:
@@ -15,11 +16,13 @@ const RECONCILE_LIMIT = 100;
 
 // Workers requires the DO class be exported from the entry module.
 export { EndpointDO } from "./do/endpoint-do";
+export { SchedulerDO } from "./do/scheduler-do";
 
 const app = new Hono<{ Bindings: Bindings }>();
 
 app.route("/v1/endpoints", endpoints);
 app.route("/v1/events", events);
+app.route("/v1/tenants", tenants);
 
 app.onError((err, c) => {
   if (err instanceof HTTPException) return c.json({ error: err.message }, err.status);
