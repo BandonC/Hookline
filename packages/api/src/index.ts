@@ -17,6 +17,7 @@ const RECONCILE_LIMIT = 100;
 // Workers requires the DO class be exported from the entry module.
 export { EndpointDO } from "./do/endpoint-do";
 export { SchedulerDO } from "./do/scheduler-do";
+export { IngestLimiterDO } from "./do/ingest-limiter-do";
 
 const app = new Hono<{ Bindings: Bindings }>();
 

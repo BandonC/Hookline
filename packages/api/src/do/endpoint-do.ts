@@ -5,6 +5,7 @@ import { endpoints, events, tenants, deliveryAttempts, deadLetters } from "@hook
 import type { Endpoint, Event, Tenant } from "@hookline/db";
 import { computeBackoff } from "../backoff";
 import { signPayload } from "../signing";
+import { decryptSecret } from "../crypto-secret";
 import { computeShard } from "../sharding";
 import { bucketWindowMs, computeTokens, nextTokenAvailableAt } from "../rate-limit";
 import {
@@ -29,6 +30,9 @@ type Env = {
   // v2 fair scheduling. The DO calls this before every deliver() and
   // releases after — see scheduler-client.ts.
   SCHEDULER_DO: DurableObjectNamespace;
+  // Master key for decrypting the endpoint's signing_secret before signing a
+  // delivery. See crypto-secret.ts.
+  SECRET_ENCRYPTION_KEY: string;
 };
 
 // Per-endpoint Durable Object: scheduler + delivery worker.
@@ -118,10 +122,17 @@ export class EndpointDO {
 
     const scheduler = makeSchedulerClient(this.env.SCHEDULER_DO);
 
+    // Decrypt the signing secret once here (the DO is the only place with the
+    // master key), and hand the delivery path an endpoint carrying the plaintext
+    // secret. Everything downstream — alarmUnordered/Ordered, deliver() — reads
+    // endpoint.signingSecret unchanged. Legacy plaintext rows pass through.
+    const signingSecret = await decryptSecret(this.env.SECRET_ENCRYPTION_KEY, endpoint.signingSecret);
+    const endpointForDelivery: Endpoint = { ...endpoint, signingSecret };
+
     if (typeof shard === "number") {
-      await alarmOrdered(db, endpoint, tenant, scheduler, shard, this.state.storage);
+      await alarmOrdered(db, endpointForDelivery, tenant, scheduler, shard, this.state.storage);
     } else {
-      await alarmUnordered(db, endpoint, tenant, scheduler, this.state.storage);
+      await alarmUnordered(db, endpointForDelivery, tenant, scheduler, this.state.storage);
     }
   }
 }

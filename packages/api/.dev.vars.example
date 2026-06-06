@@ -10,6 +10,14 @@
 # random value, e.g.  openssl rand -hex 32
 ADMIN_API_KEY=local-dev-admin-key-change-me
 
+# Master key for envelope-encrypting endpoint credentials (signing_secret,
+# ingest_key) at rest in D1. base64 of 32 random bytes, e.g.
+#   openssl rand -base64 32
+# Required: endpoint create/rotate encrypt with it; delivery + ingestion decrypt
+# with it. Rotating THIS key would orphan already-encrypted rows, so treat it as
+# long-lived. In production: wrangler secret put SECRET_ENCRYPTION_KEY
+SECRET_ENCRYPTION_KEY=base64-of-32-random-bytes-change-me
+
 # NOTE: there is intentionally NO global signing secret here. Each endpoint's
-# HMAC signing secret is generated at runtime and stored in D1 (see
+# HMAC signing secret is generated at runtime and stored (encrypted) in D1 (see
 # packages/api/src/do/CLAUDE.md). Do not add one.

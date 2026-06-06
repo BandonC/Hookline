@@ -28,6 +28,13 @@ class_name = "EndpointDO"
 name = "SCHEDULER_DO"
 class_name = "SchedulerDO"
 
+# ── Per-endpoint ingestion rate limiter ───────────────────────
+# One instance per endpoint (idFromName(endpointId)). Token-bucket gate on
+# POST /v1/events — a defensive cap so a compromised publisher can't flood.
+[[durable_objects.bindings]]
+name = "INGEST_LIMITER"
+class_name = "IngestLimiterDO"
+
 # SQLite-backed DO class = the free-tier one. Do NOT use new_classes
 # (that's the paid KV-backed variant). See packages/api/CLAUDE.md.
 [[migrations]]
@@ -37,6 +44,10 @@ new_sqlite_classes = ["EndpointDO"]
 [[migrations]]
 tag = "v2-scheduler"
 new_sqlite_classes = ["SchedulerDO"]
+
+[[migrations]]
+tag = "v3-ingest-limiter"
+new_sqlite_classes = ["IngestLimiterDO"]
 
 # ── Reconciliation cron (at-least-once backstop, NOT primary delivery) ──
 # Low frequency on purpose. Re-pokes DOs for stuck `pending` events.

@@ -109,15 +109,17 @@ npm run dev:dashboard
 ```
 
 Secrets are never committed. Copy each package's `.dev.vars.example` to `.dev.vars` and fill it in:
-the API needs `ADMIN_API_KEY`; the dashboard needs `DASHBOARD_BASIC_AUTH` (a `user:password` string).
+the API needs `ADMIN_API_KEY` and `SECRET_ENCRYPTION_KEY` (base64 of 32 random bytes —
+`openssl rand -base64 32`); the dashboard needs `DASHBOARD_BASIC_AUTH` (a `user:password` string).
 
 ## API usage
 
 The endpoint and tenant routes are gated by `ADMIN_API_KEY` (`Authorization: Bearer …`). Event
 ingestion is gated separately, by each endpoint's own `ingest_key` — the publisher presents it,
 and it only authorizes publishing to that one endpoint. (The endpoint id is **not** a credential;
-it appears in admin listings and the dashboard.) Registered receiver URLs must be `https`, and
-request bodies are capped at 128 KB.
+it appears in admin listings and the dashboard.) Registered receiver URLs must be `https`,
+request bodies are capped at 128 KB, and ingestion is rate-limited per endpoint (429 with
+`Retry-After` when a publisher exceeds the defensive cap).
 
 ```bash
 # 1. Create a tenant — the unit of fairness. weight is optional (default 1).
@@ -175,8 +177,12 @@ trusting the payload; the timestamp is signed, so it can't be forged.
   delivery came from Hookline; `ingest_key` lets a publisher submit events to that endpoint. They're
   separate on purpose — a leaked `ingest_key` can't forge signatures. Either can be rotated
   independently (`POST /v1/endpoints/:id/rotate-secret`, `…/rotate-ingest-key`), so remediating one
-  doesn't disturb the other. Both are stored as-is in D1 (HMAC is symmetric — the secret can't be
-  hashed); treat D1 access as access to every endpoint's credentials.
+  doesn't disturb the other. They can't be hashed (HMAC is symmetric), so they're **AES-256-GCM
+  encrypted at rest** under a master key held as a Worker secret (`SECRET_ENCRYPTION_KEY`) — a
+  D1-content disclosure alone doesn't reveal them.
+- **Ingestion is rate-limited and size-capped.** A per-endpoint token bucket (a Durable Object)
+  caps ingest volume so a compromised publisher can't flood D1 and delivery; bodies over 128 KB are
+  rejected during the read.
 - **Tenants are a fairness unit, not a security boundary.** One `ADMIN_API_KEY` manages every tenant
   and endpoint; tenancy meters delivery capacity, it does not isolate ownership.
 - **SSRF guard is registration-time and best-effort.** It blocks literal loopback/private/metadata
@@ -227,6 +233,6 @@ npm run deploy:api                        # deploy the API Worker (carries the D
 npm run deploy -w @hookline/dashboard     # build + deploy the dashboard Worker
 ```
 
-Production secrets are set with `wrangler secret put` (`ADMIN_API_KEY` on the API, `DASHBOARD_BASIC_AUTH`
-on the dashboard); per-endpoint signing secrets are generated at runtime and stored in D1 — there is
-no global signing secret.
+Production secrets are set with `wrangler secret put` (`ADMIN_API_KEY` and `SECRET_ENCRYPTION_KEY` on
+the API, `DASHBOARD_BASIC_AUTH` on the dashboard); per-endpoint signing secrets are generated at
+runtime and stored encrypted in D1 — there is no global signing secret.

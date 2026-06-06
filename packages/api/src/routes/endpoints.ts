@@ -16,6 +16,7 @@ import {
 import type { Bindings } from "../bindings";
 import { requireAdmin } from "../auth";
 import { parseSafeEndpointUrl } from "../ssrf";
+import { encryptSecret } from "../crypto-secret";
 
 export const endpoints = new Hono<{ Bindings: Bindings }>();
 
@@ -47,23 +48,29 @@ endpoints.post("/", async (c) => {
     throw new HTTPException(400, { message: "tenant_id refers to an unknown tenant" });
   }
 
+  // Generate plaintext credentials, store them encrypted (envelope encryption,
+  // crypto-secret.ts), and return the plaintext exactly once below — the
+  // ciphertext in `row` is never what the caller needs.
+  const plainSigning = generateSigningSecret();
+  const plainIngest = generateIngestKey();
   const [row] = await db
     .insert(endpointsTable)
     .values({
       id: `ep_${nanoid()}`,
       tenantId,
       url,
-      signingSecret: generateSigningSecret(),
-      ingestKey: generateIngestKey(),
+      signingSecret: await encryptSecret(c.env.SECRET_ENCRYPTION_KEY, plainSigning),
+      ingestKey: await encryptSecret(c.env.SECRET_ENCRYPTION_KEY, plainIngest),
       description,
     })
     .returning();
 
   // Both credentials are returned exactly once, here. signing_secret is for the
   // receiver to verify origin; ingest_key is what the publisher presents to
-  // POST /v1/events. Neither is retrievable later (excluded from list/read).
+  // POST /v1/events. Neither is retrievable later (excluded from list/read, and
+  // stored encrypted regardless).
   return c.json(
-    { ...toPublic(row), signing_secret: row.signingSecret, ingest_key: row.ingestKey },
+    { ...toPublic(row), signing_secret: plainSigning, ingest_key: plainIngest },
     201,
   );
 });
@@ -82,7 +89,7 @@ endpoints.post("/:id/rotate-secret", async (c) => {
   const newSecret = generateSigningSecret();
   const [updated] = await db
     .update(endpointsTable)
-    .set({ signingSecret: newSecret })
+    .set({ signingSecret: await encryptSecret(c.env.SECRET_ENCRYPTION_KEY, newSecret) })
     .where(eq(endpointsTable.id, id))
     .returning({ id: endpointsTable.id });
   if (!updated) throw new HTTPException(404, { message: "endpoint not found" });
@@ -102,7 +109,7 @@ endpoints.post("/:id/rotate-ingest-key", async (c) => {
   const newKey = generateIngestKey();
   const [updated] = await db
     .update(endpointsTable)
-    .set({ ingestKey: newKey })
+    .set({ ingestKey: await encryptSecret(c.env.SECRET_ENCRYPTION_KEY, newKey) })
     .where(eq(endpointsTable.id, id))
     .returning({ id: endpointsTable.id });
   if (!updated) throw new HTTPException(404, { message: "endpoint not found" });
