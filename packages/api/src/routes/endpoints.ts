@@ -54,11 +54,60 @@ endpoints.post("/", async (c) => {
       tenantId,
       url,
       signingSecret: generateSigningSecret(),
+      ingestKey: generateIngestKey(),
       description,
     })
     .returning();
 
-  return c.json({ ...toPublic(row), signing_secret: row.signingSecret }, 201);
+  // Both credentials are returned exactly once, here. signing_secret is for the
+  // receiver to verify origin; ingest_key is what the publisher presents to
+  // POST /v1/events. Neither is retrievable later (excluded from list/read).
+  return c.json(
+    { ...toPublic(row), signing_secret: row.signingSecret, ingest_key: row.ingestKey },
+    201,
+  );
+});
+
+// Rotate an endpoint's HMAC signing secret. Admin-only (route-level
+// requireAdmin). Hard rotate: the old secret stops working immediately, so the
+// operator must update the receiver's configured secret promptly — until then,
+// in-flight deliveries will fail the receiver's signature check. The new secret
+// is returned exactly once, like creation. This is the only remediation path for
+// a leaked signing secret (storage is plaintext by necessity — HMAC is
+// symmetric, the DO recomputes the MAC at delivery time).
+endpoints.post("/:id/rotate-secret", async (c) => {
+  const id = c.req.param("id");
+  const db = drizzle(c.env.DB);
+
+  const newSecret = generateSigningSecret();
+  const [updated] = await db
+    .update(endpointsTable)
+    .set({ signingSecret: newSecret })
+    .where(eq(endpointsTable.id, id))
+    .returning({ id: endpointsTable.id });
+  if (!updated) throw new HTTPException(404, { message: "endpoint not found" });
+
+  return c.json({ id: updated.id, signing_secret: newSecret });
+});
+
+// Rotate an endpoint's ingest_key. Admin-only. Same hard-rotate semantics as
+// rotate-secret: the old key stops working immediately, so re-issue it to the
+// publisher promptly. This is the remediation path for a leaked ingest_key —
+// and the only way to recover an endpoint whose key was backfilled by the
+// 0007 migration and never surfaced. The new key is returned exactly once.
+endpoints.post("/:id/rotate-ingest-key", async (c) => {
+  const id = c.req.param("id");
+  const db = drizzle(c.env.DB);
+
+  const newKey = generateIngestKey();
+  const [updated] = await db
+    .update(endpointsTable)
+    .set({ ingestKey: newKey })
+    .where(eq(endpointsTable.id, id))
+    .returning({ id: endpointsTable.id });
+  if (!updated) throw new HTTPException(404, { message: "endpoint not found" });
+
+  return c.json({ id: updated.id, ingest_key: newKey });
 });
 
 // List — no signing_secret selected.
@@ -343,6 +392,15 @@ function generateSigningSecret(): string {
   const bytes = crypto.getRandomValues(new Uint8Array(32));
   const hex = Array.from(bytes, (b) => b.toString(16).padStart(2, "0")).join("");
   return `whsec_${hex}`;
+}
+
+// `ingk_` + 256 bits of entropy. Inbound publish credential, same construction
+// as the signing secret. Stored plaintext (compared in constant time at
+// ingestion), returned once on creation, never selected by list/read.
+function generateIngestKey(): string {
+  const bytes = crypto.getRandomValues(new Uint8Array(32));
+  const hex = Array.from(bytes, (b) => b.toString(16).padStart(2, "0")).join("");
+  return `ingk_${hex}`;
 }
 
 // Required at creation. Format is the tenant_<nanoid> id; we don't validate

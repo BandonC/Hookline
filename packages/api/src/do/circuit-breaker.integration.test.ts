@@ -66,6 +66,7 @@ async function seedEndpoint(o: {
     id: o.id,
     url: `https://example.test/${o.id}`,
     signingSecret: `whsec_${o.id}`,
+    ingestKey: `ingk_${o.id}`,
     circuitBreakerEnabled: o.enabled ?? true,
     breakerState: o.state ?? "closed",
     breakerOpenUntil: o.openUntil ?? null,

@@ -53,6 +53,7 @@ const endpoint: Endpoint = {
   tenantId: "ten_default",
   url: "https://receiver.example/hook",
   signingSecret: "whsec_test_secret",
+  ingestKey: "ingk_test",
   description: null,
   ordered: false,
   rateLimitRps: null,

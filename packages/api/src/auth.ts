@@ -1,9 +1,12 @@
 import { createMiddleware } from "hono/factory";
 import type { Bindings } from "./bindings";
+import { timingSafeEqual } from "./timing-safe-equal";
 
-// Admin gate for the /v1/endpoints CRUD routes. Caller presents the key as
-// `Authorization: Bearer <ADMIN_API_KEY>`. Event ingestion is intentionally
-// NOT behind this gate in v1.
+// Admin gate for the /v1/endpoints and /v1/tenants CRUD routes. Caller presents
+// the key as `Authorization: Bearer <ADMIN_API_KEY>`. Event ingestion is NOT
+// behind this admin gate — it has its own per-endpoint credential (the
+// endpoint's ingest_key, checked in routes/events.ts), so publishers don't need
+// the admin key and a leaked ingest_key is scoped to one endpoint.
 export const requireAdmin = createMiddleware<{ Bindings: Bindings }>(async (c, next) => {
   const header = c.req.header("Authorization") ?? "";
   const token = header.startsWith("Bearer ") ? header.slice("Bearer ".length) : "";
@@ -12,13 +15,3 @@ export const requireAdmin = createMiddleware<{ Bindings: Bindings }>(async (c, n
   }
   await next();
 });
-
-// Constant-time compare so a wrong key can't be recovered byte-by-byte via
-// response timing. Length is fixed for the configured key, so leaking it via
-// the early return is acceptable.
-function timingSafeEqual(a: string, b: string): boolean {
-  if (a.length !== b.length) return false;
-  let diff = 0;
-  for (let i = 0; i < a.length; i++) diff |= a.charCodeAt(i) ^ b.charCodeAt(i);
-  return diff === 0;
-}

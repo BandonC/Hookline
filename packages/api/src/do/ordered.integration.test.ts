@@ -25,7 +25,7 @@ beforeEach(async () => {
 async function seedEndpoint(id: string) {
   await db
     .insert(endpoints)
-    .values({ id, url: `https://example.test/${id}`, signingSecret: `whsec_${id}` });
+    .values({ id, url: `https://example.test/${id}`, signingSecret: `whsec_${id}`, ingestKey: `ingk_${id}` });
 }
 
 type SeedEvent = {

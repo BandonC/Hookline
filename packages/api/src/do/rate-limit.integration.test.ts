@@ -64,6 +64,7 @@ async function seedEndpoint(o: {
     id: o.id,
     url: `https://example.test/${o.id}`,
     signingSecret: `whsec_${o.id}`,
+    ingestKey: `ingk_${o.id}`,
     ordered: o.ordered ?? false,
     rateLimitRps: o.rateLimitRps ?? null,
     rateLimitBurst: o.rateLimitBurst ?? null,

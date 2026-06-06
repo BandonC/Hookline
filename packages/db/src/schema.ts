@@ -28,6 +28,14 @@ export const endpoints = sqliteTable("endpoints", {
     .references(() => tenants.id),
   url: text("url").notNull(),
   signingSecret: text("signing_secret").notNull(), // plaintext; generated at creation, shown once
+  // Inbound publish credential for POST /v1/events — separate from the
+  // outbound signing_secret (which proves origin to the receiver). The publisher
+  // presents this; without it, anyone who knows the non-secret endpoint id could
+  // make Hookline sign+deliver arbitrary payloads. Generated at creation, shown
+  // once, never returned by list/read. NOT NULL here reflects intent; the
+  // migration adds it nullable + backfills (SQLite ADD COLUMN can't be NOT NULL
+  // without a constant default, and a shared default would leak a credential).
+  ingestKey: text("ingest_key").notNull(),
   description: text("description"),
   ordered: integer("ordered", { mode: "boolean" }).notNull().default(false), // v2; unused in v1
   // v2 per-endpoint rate limiting. Both nullable; either NULL = unlimited.
