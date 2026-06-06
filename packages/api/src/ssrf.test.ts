@@ -42,6 +42,11 @@ describe("parseSafeEndpointUrl", () => {
     expectRejected("file:///etc/passwd");
   });
 
+  it("rejects URLs with embedded credentials (userinfo)", () => {
+    expectRejected("https://user:pass@receiver.example/hook");
+    expectRejected("https://user@receiver.example/hook");
+  });
+
   it("rejects localhost and loopback", () => {
     expectRejected("https://localhost/");
     expectRejected("https://api.localhost/");

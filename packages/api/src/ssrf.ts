@@ -26,6 +26,12 @@ export function parseSafeEndpointUrl(raw: unknown): string {
   if (u.protocol !== "https:") {
     throw new HTTPException(400, { message: "url must be https" });
   }
+  // Reject embedded credentials (https://user:pass@host/): they would be
+  // persisted in D1 and surfaced in the dashboard endpoint list — an avoidable
+  // secret leak. A receiver that needs auth should not carry it in the URL.
+  if (u.username !== "" || u.password !== "") {
+    throw new HTTPException(400, { message: "url must not include credentials" });
+  }
   const host = u.hostname.toLowerCase().replace(/^\[|\]$/g, ""); // strip IPv6 brackets
   if (isBlockedHost(host)) {
     throw new HTTPException(400, { message: "url target address is not allowed" });
