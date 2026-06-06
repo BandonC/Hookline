@@ -17,6 +17,7 @@ const RECONCILE_LIMIT = 100;
 // Workers requires the DO class be exported from the entry module.
 export { EndpointDO } from "./do/endpoint-do";
 export { SchedulerDO } from "./do/scheduler-do";
+export { IngestLimiterDO } from "./do/ingest-limiter-do";
 
 const app = new Hono<{ Bindings: Bindings }>();
 
@@ -26,7 +27,10 @@ app.route("/v1/tenants", tenants);
 
 app.onError((err, c) => {
   if (err instanceof HTTPException) return c.json({ error: err.message }, err.status);
-  console.error(err);
+  // Log a bounded description, never the whole error object: a thrown error can
+  // carry request/payload data on its properties, stack, or `cause`, and project
+  // rules forbid logging payloads.
+  console.error("unhandled error:", err instanceof Error ? `${err.name}: ${err.message}` : "non-Error thrown");
   return c.json({ error: "internal error" }, 500);
 });
 

@@ -1,4 +1,5 @@
 import { and, asc, count, desc, eq } from "drizzle-orm";
+import { getCloudflareContext } from "@opennextjs/cloudflare";
 import { endpoints, events, deliveryAttempts, deadLetters } from "@hookline/db";
 import { getDb } from "./db";
 
@@ -76,6 +77,18 @@ export async function eventWithAttempts(id: string) {
     .where(eq(deliveryAttempts.eventId, id))
     .orderBy(asc(deliveryAttempts.attemptNumber));
 
+  // A response_snippet is the receiver's response body (capped 1KB) and can
+  // carry sensitive data. In public-demo mode (no Basic Auth gate) redact it;
+  // gated deployments still show it. The placeholder preserves the "there was a
+  // response" vs "network error (null)" distinction.
+  const publicMode = getCloudflareContext().env.DASHBOARD_PUBLIC === "true";
+  const safeAttempts = publicMode
+    ? attempts.map((a) => ({
+        ...a,
+        responseSnippet: a.responseSnippet === null ? null : "[redacted]",
+      }))
+    : attempts;
+
   // For pending ordered events, surface "this isn't the head of its
   // (endpoint, key) queue" so it's clear when waiting is per-key HOLB and
   // not just a scheduled retry. Served by ordered_head_idx
@@ -97,7 +110,7 @@ export async function eventWithAttempts(id: string) {
     if (head && head.id !== event.id) blockedBy = { id: head.id };
   }
 
-  return { event, attempts, blockedBy };
+  return { event, attempts: safeAttempts, blockedBy };
 }
 
 export async function eventCounts() {

@@ -10,14 +10,44 @@ import { nanoid } from "nanoid";
 import { events as eventsTable, endpoints as endpointsTable } from "@hookline/db";
 import type { Bindings } from "../bindings";
 import { computeShard, endpointDoName } from "../sharding";
+import { timingSafeEqual } from "../timing-safe-equal";
+import { decryptSecret } from "../crypto-secret";
 
 export const events = new Hono<{ Bindings: Bindings }>();
 
+// Hard cap on an ingested event body. Enforced during the read (not via a
+// trusted Content-Length) so a chunked or mis-declared stream can't push
+// unbounded data into the Worker before we check.
+const MAX_BODY_BYTES = 128 * 1024; // 128 KB
+
+// Defensive per-endpoint ingestion cap (token bucket in INGEST_LIMITER). Sized
+// generously — a ceiling that bounds a compromised publisher, not a product SLA.
+// Tuning these is a deploy, same pattern as MAX_ATTEMPTS / the tenancy constants.
+const INGEST_RATE_RPS = 100;
+const INGEST_BURST = 200;
+
 events.post("/", async (c) => {
-  const body = await c.req.json().catch(() => null);
-  if (body === null || typeof body !== "object" || Array.isArray(body)) {
+  // Cheap pre-check before any body read or DB work: ingestion requires a
+  // bearer token (the endpoint's ingest_key). The endpoint id alone is NOT a
+  // credential — it appears in admin listings and the dashboard — so without
+  // this gate anyone who learns an id could make Hookline sign+deliver
+  // arbitrary payloads under that endpoint's secret. The actual constant-time
+  // comparison happens below, once we've loaded the endpoint's key.
+  const token = bearerToken(c.req.header("Authorization"));
+  if (token === null) throw new HTTPException(401, { message: "unauthorized" });
+
+  const raw = await readBodyCapped(c.req.raw, MAX_BODY_BYTES);
+  if (raw === null) throw new HTTPException(413, { message: "payload too large" });
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    parsed = null;
+  }
+  if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) {
     throw new HTTPException(400, { message: "body must be a JSON object" });
   }
+  const body = parsed as Record<string, unknown>;
 
   const endpointId = body.endpoint_id;
   if (typeof endpointId !== "string" || endpointId.length === 0) {
@@ -44,17 +74,48 @@ events.post("/", async (c) => {
   const db = drizzle(c.env.DB);
 
   const [endpoint] = await db
-    .select({ id: endpointsTable.id, ordered: endpointsTable.ordered })
+    .select({
+      id: endpointsTable.id,
+      ordered: endpointsTable.ordered,
+      ingestKey: endpointsTable.ingestKey,
+    })
     .from(endpointsTable)
     .where(eq(endpointsTable.id, endpointId))
     .limit(1);
   if (!endpoint) throw new HTTPException(404, { message: "endpoint not found" });
+
+  // Constant-time compare of the presented token against this endpoint's
+  // ingest_key (decrypted from D1; legacy plaintext passes through). Mismatch is
+  // 401 — the caller is not authorized to publish here.
+  const expectedKey = await decryptSecret(c.env.SECRET_ENCRYPTION_KEY, endpoint.ingestKey);
+  if (!timingSafeEqual(token, expectedKey)) {
+    throw new HTTPException(401, { message: "unauthorized" });
+  }
 
   // Ordered endpoints require an ordering_key. Accepting one with a sentinel
   // would silently HOLB everything into one queue — see HOOKLINE.md §7.
   if (endpoint.ordered && orderingKey === null) {
     throw new HTTPException(400, {
       message: "ordering_key is required for ordered endpoints",
+    });
+  }
+
+  // Defensive ingestion rate limit, after auth so only an authorized publisher's
+  // own volume is capped (wrong-key callers are already 401'd, cheaply). Checked
+  // before the D1 write + DO poke so a flood never reaches them. Keyed by
+  // endpoint, matching the ingest_key credential boundary.
+  const limiter = c.env.INGEST_LIMITER.get(c.env.INGEST_LIMITER.idFromName(endpointId));
+  const limitRes = await limiter.fetch("https://hookline.internal/check", {
+    method: "POST",
+    body: JSON.stringify({ rate: INGEST_RATE_RPS, burst: INGEST_BURST }),
+  });
+  const { allowed, retryAfterMs } = await limitRes.json<{
+    allowed: boolean;
+    retryAfterMs: number;
+  }>();
+  if (!allowed) {
+    return c.json({ error: "rate limited" }, 429, {
+      "Retry-After": String(Math.ceil(retryAfterMs / 1000)),
     });
   }
 
@@ -109,3 +170,39 @@ events.post("/", async (c) => {
     202,
   );
 });
+
+// Extract a non-empty bearer token from an Authorization header, or null.
+function bearerToken(header: string | undefined): string | null {
+  if (header === undefined || !header.startsWith("Bearer ")) return null;
+  const token = header.slice("Bearer ".length);
+  return token.length === 0 ? null : token;
+}
+
+// Read a request body with a hard byte cap enforced during the read. Returns
+// the decoded text, or null if the body exceeds `cap` (the caller maps that to
+// 413). Mirrors the DO's readCapped philosophy: never buffer an unbounded body.
+async function readBodyCapped(req: Request, cap: number): Promise<string | null> {
+  if (!req.body) return "";
+  const reader = req.body.getReader();
+  const chunks: Uint8Array[] = [];
+  let total = 0;
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      total += value.length;
+      if (total > cap) return null;
+      chunks.push(value);
+    }
+  } finally {
+    await reader.cancel().catch(() => {});
+  }
+
+  const buf = new Uint8Array(total);
+  let offset = 0;
+  for (const chunk of chunks) {
+    buf.set(chunk, offset);
+    offset += chunk.length;
+  }
+  return new TextDecoder().decode(buf);
+}

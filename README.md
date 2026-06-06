@@ -109,12 +109,17 @@ npm run dev:dashboard
 ```
 
 Secrets are never committed. Copy each package's `.dev.vars.example` to `.dev.vars` and fill it in:
-the API needs `ADMIN_API_KEY`; the dashboard needs `DASHBOARD_BASIC_AUTH` (a `user:password` string).
+the API needs `ADMIN_API_KEY` and `SECRET_ENCRYPTION_KEY` (base64 of 32 random bytes —
+`openssl rand -base64 32`); the dashboard needs `DASHBOARD_BASIC_AUTH` (a `user:password` string).
 
 ## API usage
 
 The endpoint and tenant routes are gated by `ADMIN_API_KEY` (`Authorization: Bearer …`). Event
-ingestion is intentionally **not** gated.
+ingestion is gated separately, by each endpoint's own `ingest_key` — the publisher presents it,
+and it only authorizes publishing to that one endpoint. (The endpoint id is **not** a credential;
+it appears in admin listings and the dashboard.) Registered receiver URLs must be `https`,
+request bodies are capped at 128 KB, and ingestion is rate-limited per endpoint (429 with
+`Retry-After` when a publisher exceeds the defensive cap).
 
 ```bash
 # 1. Create a tenant — the unit of fairness. weight is optional (default 1).
@@ -124,18 +129,32 @@ curl -X POST https://<api-host>/v1/tenants \
   -d '{"name":"acme","weight":5}'
 # -> 201 { "id": "ten_…", "name": "acme", "weight": 5, ... }
 
-# 2. Register a receiver under that tenant. The signing secret is returned ONCE — store it.
+# 2. Register a receiver under that tenant. signing_secret AND ingest_key are each
+#    returned ONCE — store both. (signing_secret verifies origin; ingest_key publishes.)
 curl -X POST https://<api-host>/v1/endpoints \
   -H "Authorization: Bearer $ADMIN_API_KEY" \
   -H "Content-Type: application/json" \
   -d '{"tenant_id":"ten_…","url":"https://your-receiver.example/hook","description":"orders"}'
-# -> 201 { "id": "ep_…", "signing_secret": "whsec_…", ... }
+# -> 201 { "id": "ep_…", "signing_secret": "whsec_…", "ingest_key": "ingk_…", ... }
 
-# 3. Ingest an event for that endpoint.
+# 3. Ingest an event for that endpoint — present the endpoint's ingest_key.
 curl -X POST https://<api-host>/v1/events \
+  -H "Authorization: Bearer $INGEST_KEY" \
   -H "Content-Type: application/json" \
   -d '{"endpoint_id":"ep_…","payload":{"type":"order.created","id":123}}'
 # -> 202 { "id": "evt_…", "status": "pending", ... }
+
+# Rotate an endpoint's signing secret (admin-only) if it leaks. Hard rotate: the old
+# secret stops working immediately, so update the receiver's configured secret promptly.
+curl -X POST https://<api-host>/v1/endpoints/ep_…/rotate-secret \
+  -H "Authorization: Bearer $ADMIN_API_KEY"
+# -> 200 { "id": "ep_…", "signing_secret": "whsec_…" }   # returned once
+
+# Rotate an endpoint's ingest_key the same way (admin-only). Hard rotate: re-issue the
+# new key to the publisher promptly.
+curl -X POST https://<api-host>/v1/endpoints/ep_…/rotate-ingest-key \
+  -H "Authorization: Bearer $ADMIN_API_KEY"
+# -> 200 { "id": "ep_…", "ingest_key": "ingk_…" }        # returned once
 ```
 
 Hookline then delivers to the receiver with these headers, and the event ID lives **inside** the
@@ -148,7 +167,31 @@ X-Hookline-Event-Id: evt_…         # convenience only — authority is the id 
 ```
 
 Receivers verify by recomputing the signature over `timestamp.body` with their `signing_secret`,
-and dedupe on the event ID (delivery is at-least-once).
+and dedupe on the event ID (delivery is at-least-once). For replay protection, reject deliveries
+whose `X-Hookline-Timestamp` is outside a tolerance window (a few minutes — Stripe uses 5) before
+trusting the payload; the timestamp is signed, so it can't be forged.
+
+## Security model
+
+- **Two credentials per endpoint, each shown once.** `signing_secret` lets the receiver verify a
+  delivery came from Hookline; `ingest_key` lets a publisher submit events to that endpoint. They're
+  separate on purpose — a leaked `ingest_key` can't forge signatures. Either can be rotated
+  independently (`POST /v1/endpoints/:id/rotate-secret`, `…/rotate-ingest-key`), so remediating one
+  doesn't disturb the other. They can't be hashed (HMAC is symmetric), so they're **AES-256-GCM
+  encrypted at rest** under a master key held as a Worker secret (`SECRET_ENCRYPTION_KEY`) — a
+  D1-content disclosure alone doesn't reveal them.
+- **Ingestion is rate-limited and size-capped.** A per-endpoint token bucket (a Durable Object)
+  caps ingest volume so a compromised publisher can't flood D1 and delivery; bodies over 128 KB are
+  rejected during the read.
+- **Tenants are a fairness unit, not a security boundary.** One `ADMIN_API_KEY` manages every tenant
+  and endpoint; tenancy meters delivery capacity, it does not isolate ownership.
+- **SSRF guard is registration-time and best-effort.** It blocks literal loopback/private/metadata
+  addresses (including obfuscated IPv4 forms) and requires `https`, but cannot defend against DNS
+  rebinding — the Workers `fetch` runtime exposes no way to resolve-and-pin. Endpoint registration is
+  admin-gated, which bounds that exposure.
+- **Public dashboard mode redacts response snippets.** With `DASHBOARD_PUBLIC=true` (the seeded demo)
+  the Basic Auth gate is off, so per-attempt response snippets — which can carry receiver data — are
+  redacted. Real deployments leave the gate on and see them.
 
 ## Dashboard
 
@@ -190,6 +233,6 @@ npm run deploy:api                        # deploy the API Worker (carries the D
 npm run deploy -w @hookline/dashboard     # build + deploy the dashboard Worker
 ```
 
-Production secrets are set with `wrangler secret put` (`ADMIN_API_KEY` on the API, `DASHBOARD_BASIC_AUTH`
-on the dashboard); per-endpoint signing secrets are generated at runtime and stored in D1 — there is
-no global signing secret.
+Production secrets are set with `wrangler secret put` (`ADMIN_API_KEY` and `SECRET_ENCRYPTION_KEY` on
+the API, `DASHBOARD_BASIC_AUTH` on the dashboard); per-endpoint signing secrets are generated at
+runtime and stored encrypted in D1 — there is no global signing secret.

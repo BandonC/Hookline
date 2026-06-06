@@ -69,6 +69,7 @@ async function seedEndpoint(o: { id: string; tenantId: string }): Promise<Endpoi
     tenantId: o.tenantId,
     url: `https://example.test/${o.id}`,
     signingSecret: `whsec_${o.id}`,
+    ingestKey: `ingk_${o.id}`,
   });
   const [row] = await db.select().from(endpoints).where(eq(endpoints.id, o.id)).limit(1);
   return row!;
