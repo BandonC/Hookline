@@ -172,7 +172,7 @@ export async function alarmUnordered(
   // re-arms to the next breaker re-evaluation time. No delivery happens.
   if (breaker.kind === "deferAll") {
     for (const event of due) {
-      await setBreakerDefer(db, event.id);
+      await setBreakerDefer(db, event.id, breaker.reArmTo);
     }
     if (due.length > 0) await storage.setAlarm(breaker.reArmTo);
     return;
@@ -234,7 +234,7 @@ export async function alarmUnordered(
 
   for (const event of due) {
     if (breakerTripped) {
-      await setBreakerDefer(db, event.id);
+      await setBreakerDefer(db, event.id, tripReArmTo!);
       continue;
     }
     if (gate && gate.tokens < 1) {
@@ -355,7 +355,7 @@ export async function alarmOrdered(
 
   if (breaker.kind === "deferAll") {
     for (const head of ownedDueHeads) {
-      await setBreakerDefer(db, head.id);
+      await setBreakerDefer(db, head.id, breaker.reArmTo);
     }
     if (ownedDueHeads.length > 0) await storage.setAlarm(breaker.reArmTo);
     return;
@@ -406,7 +406,7 @@ export async function alarmOrdered(
 
   for (const head of ownedDueHeads) {
     if (breakerTripped) {
-      await setBreakerDefer(db, head.id);
+      await setBreakerDefer(db, head.id, tripReArmTo!);
       continue;
     }
     if (gate && gate.tokens < 1) {
@@ -686,10 +686,12 @@ async function loadRateGate(
 
 // Defer path: the coordinator denied a slot for this event's tenant.
 // Same shape as deferForRate/setBreakerDefer — set the reason, leave
-// status/attempt_count/next_attempt_at untouched, no delivery_attempts
-// row. Re-arm to the coordinator's retry hint; the per-endpoint DO
-// returns immediately, so the rest of this tick's due events (all
-// belonging to the same tenant) wait until the next alarm.
+// status/attempt_count untouched, no delivery_attempts row, and push
+// next_attempt_at out to the re-arm instant (see setBreakerDefer for why:
+// keeps the reconciliation cron from re-poking an already-armed DO). Re-arm
+// to the coordinator's retry hint; the per-endpoint DO returns immediately,
+// so the rest of this tick's due events (all belonging to the same tenant)
+// wait until the next alarm.
 async function deferForTenantThrottle(
   db: ReturnType<typeof drizzle>,
   storage: DurableObjectState["storage"],
@@ -697,18 +699,20 @@ async function deferForTenantThrottle(
   retryAfterMs: number,
   now: number,
 ): Promise<void> {
+  const reArmAt = now + retryAfterMs;
   await db
     .update(events)
-    .set({ lastDeferReason: "tenant_throttled" })
+    .set({ lastDeferReason: "tenant_throttled", nextAttemptAt: new Date(reArmAt) })
     .where(eq(events.id, event.id));
-  await storage.setAlarm(now + retryAfterMs);
+  await storage.setAlarm(reArmAt);
 }
 
 // Defer path: the bucket is dry for `event`. Mark it deferred (b1 — the
 // most recent scheduling decision is the rate-limit gate), set the alarm
 // to the next-token time, and return without writing a delivery_attempts
-// row. No event status, attempt_count, or next_attempt_at is touched —
-// the event stays exactly as it was, just with last_defer_reason set.
+// row. status and attempt_count are untouched; next_attempt_at is pushed to
+// the next-token time (the same instant we re-arm to) so the reconciliation
+// cron doesn't keep re-poking this already-armed DO every run.
 async function deferForRate(
   db: ReturnType<typeof drizzle>,
   storage: DurableObjectState["storage"],
@@ -716,11 +720,12 @@ async function deferForRate(
   gate: RateGate,
   now: number,
 ): Promise<void> {
+  const reArmAt = nextTokenAvailableAt(gate.tokens, gate.rate, now);
   await db
     .update(events)
-    .set({ lastDeferReason: "rate_limited" })
+    .set({ lastDeferReason: "rate_limited", nextAttemptAt: new Date(reArmAt) })
     .where(eq(events.id, event.id));
-  await storage.setAlarm(nextTokenAvailableAt(gate.tokens, gate.rate, now));
+  await storage.setAlarm(reArmAt);
 }
 
 // ============================================================================
@@ -887,16 +892,20 @@ async function tryCasHalfOpenToOpen(
   });
 }
 
-// Defer path: breaker says no. Same shape as deferForRate — set the reason,
-// leave status / attempt_count / next_attempt_at untouched. The event will
-// re-fire when alarm() is poked or re-arms.
+// Defer path: breaker says no. Set the reason and push next_attempt_at out to
+// `reArmAt` — the same instant alarm() re-arms to. This keeps the
+// reconciliation cron (which treats a past-due `pending` event as a lost poke)
+// from re-poking a healthy, already-armed DO on every run, which would
+// otherwise drag the alarm back to the past and re-evaluate the breaker every
+// cron tick instead of once per open window. status / attempt_count untouched.
 async function setBreakerDefer(
   db: ReturnType<typeof drizzle>,
   eventId: string,
+  reArmAt: number,
 ): Promise<void> {
   await db
     .update(events)
-    .set({ lastDeferReason: "breaker_open" })
+    .set({ lastDeferReason: "breaker_open", nextAttemptAt: new Date(reArmAt) })
     .where(eq(events.id, eventId));
 }
 
