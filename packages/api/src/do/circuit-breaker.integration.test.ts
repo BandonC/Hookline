@@ -119,6 +119,15 @@ async function lastDeferReason(eventId: string) {
   return row?.r ?? null;
 }
 
+async function nextAttemptAt(eventId: string): Promise<number | null> {
+  const [row] = await db
+    .select({ t: events.nextAttemptAt })
+    .from(events)
+    .where(eq(events.id, eventId))
+    .limit(1);
+  return row?.t?.getTime() ?? null;
+}
+
 // =============================================================================
 // State: open (now < open_until) — defer all
 // =============================================================================
@@ -147,6 +156,12 @@ describe("alarmUnordered + breaker: open state defers all", () => {
     expect(await lastDeferReason("evt_2")).toBe("breaker_open");
     // Alarm re-armed to open_until.
     expect(getAlarm()).toBe(openUntil.getTime());
+    // next_attempt_at is pushed forward to the re-arm instant (open_until), not
+    // left in the past. A past-due deferred event would make the reconciliation
+    // cron re-poke this already-armed DO every run and re-evaluate the breaker
+    // each cron tick instead of once per open window.
+    expect(await nextAttemptAt("evt_1")).toBe(openUntil.getTime());
+    expect(await nextAttemptAt("evt_2")).toBe(openUntil.getTime());
   });
 
   it("when disabled, breaker state is ignored and events deliver normally", async () => {
