@@ -4,6 +4,11 @@
   "main": ".open-next/worker.js",
   "compatibility_date": "2024-12-30",
   "compatibility_flags": ["nodejs_compat", "global_fetch_strictly_public"],
+  // Public hostname for the dashboard. The workers.dev route stays live
+  // alongside this (cosmetic overlay, never load-bearing). The Custom Domain is
+  // created once in the Cloudflare dashboard; this entry is the version-
+  // controlled record and reconciles on subsequent deploys.
+  "routes": [{ "pattern": "hookline.bandonc.com", "custom_domain": true }],
   "assets": {
     "directory": ".open-next/assets",
     "binding": "ASSETS"

@@ -21,6 +21,11 @@ export { IngestLimiterDO } from "./do/ingest-limiter-do";
 
 const app = new Hono<{ Bindings: Bindings }>();
 
+// Unauthenticated liveness probe. Static and secretless on purpose: it lets an
+// uptime monitor (or a curl) confirm the Worker is serving. It reveals no state,
+// so it needs no auth — and there is nothing to subtly break, so no test.
+app.get("/health", (c) => c.json({ status: "ok" }));
+
 app.route("/v1/endpoints", endpoints);
 app.route("/v1/events", events);
 app.route("/v1/tenants", tenants);
