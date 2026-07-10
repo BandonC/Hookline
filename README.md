@@ -9,7 +9,7 @@ server actually receiving it — signing, retries, failure isolation, and delive
 
 [![CI](https://github.com/BandonC/Hookline/actions/workflows/ci.yml/badge.svg)](https://github.com/BandonC/Hookline/actions/workflows/ci.yml)
 
-**[Live dashboard](https://hookline-dashboard.bandon.workers.dev)** — read-only, no login (seeded demo data).
+**[Live dashboard](https://hookline.bandonc.com)** — read-only, no login (seeded demo data). Liveness: [`api.bandonc.com/health`](https://api.bandonc.com/health).
 
 Cloudflare-native, TypeScript end-to-end, and it runs at **$0/month** on free-tier primitives —
 no managed queue. The delivery scheduler is built in-house on Durable Object alarms.
@@ -123,7 +123,7 @@ request bodies are capped at 128 KB, and ingestion is rate-limited per endpoint 
 
 ```bash
 # 1. Create a tenant — the unit of fairness. weight is optional (default 1).
-curl -X POST https://<api-host>/v1/tenants \
+curl -X POST https://api.bandonc.com/v1/tenants \
   -H "Authorization: Bearer $ADMIN_API_KEY" \
   -H "Content-Type: application/json" \
   -d '{"name":"acme","weight":5}'
@@ -131,14 +131,14 @@ curl -X POST https://<api-host>/v1/tenants \
 
 # 2. Register a receiver under that tenant. signing_secret AND ingest_key are each
 #    returned ONCE — store both. (signing_secret verifies origin; ingest_key publishes.)
-curl -X POST https://<api-host>/v1/endpoints \
+curl -X POST https://api.bandonc.com/v1/endpoints \
   -H "Authorization: Bearer $ADMIN_API_KEY" \
   -H "Content-Type: application/json" \
   -d '{"tenant_id":"ten_…","url":"https://your-receiver.example/hook","description":"orders"}'
 # -> 201 { "id": "ep_…", "signing_secret": "whsec_…", "ingest_key": "ingk_…", ... }
 
 # 3. Ingest an event for that endpoint — present the endpoint's ingest_key.
-curl -X POST https://<api-host>/v1/events \
+curl -X POST https://api.bandonc.com/v1/events \
   -H "Authorization: Bearer $INGEST_KEY" \
   -H "Content-Type: application/json" \
   -d '{"endpoint_id":"ep_…","payload":{"type":"order.created","id":123}}'
@@ -146,13 +146,13 @@ curl -X POST https://<api-host>/v1/events \
 
 # Rotate an endpoint's signing secret (admin-only) if it leaks. Hard rotate: the old
 # secret stops working immediately, so update the receiver's configured secret promptly.
-curl -X POST https://<api-host>/v1/endpoints/ep_…/rotate-secret \
+curl -X POST https://api.bandonc.com/v1/endpoints/ep_…/rotate-secret \
   -H "Authorization: Bearer $ADMIN_API_KEY"
 # -> 200 { "id": "ep_…", "signing_secret": "whsec_…" }   # returned once
 
 # Rotate an endpoint's ingest_key the same way (admin-only). Hard rotate: re-issue the
 # new key to the publisher promptly.
-curl -X POST https://<api-host>/v1/endpoints/ep_…/rotate-ingest-key \
+curl -X POST https://api.bandonc.com/v1/endpoints/ep_…/rotate-ingest-key \
   -H "Authorization: Bearer $ADMIN_API_KEY"
 # -> 200 { "id": "ep_…", "ingest_key": "ingk_…" }        # returned once
 ```
