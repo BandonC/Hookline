@@ -9,8 +9,18 @@ export function ThemeToggle() {
   const [theme, setTheme] = useState<"light" | "dark" | null>(null);
 
   useEffect(() => {
+    // When the boot script left data-theme unset (no saved choice), the page is
+    // rendering from prefers-color-scheme — so resolve the effective theme the
+    // same way toggle() does, rather than leaving state null and mislabelling
+    // the glyph on the first render.
     const t = document.documentElement.getAttribute("data-theme");
-    setTheme(t === "dark" ? "dark" : t === "light" ? "light" : null);
+    setTheme(
+      t === "dark" || t === "light"
+        ? t
+        : window.matchMedia("(prefers-color-scheme: dark)").matches
+          ? "dark"
+          : "light",
+    );
   }, []);
 
   function toggle() {
