@@ -195,8 +195,9 @@ trusting the payload; the timestamp is signed, so it can't be forged.
 
 ## Dashboard
 
-A read-only view of delivery state. It's gated by HTTP Basic Auth, reads the same D1 the API
-writes, and never surfaces signing secrets.
+A read-only view of delivery state. It's gated by HTTP Basic Auth (off in the seeded public
+demo — see Security model), reads the same D1 the API writes, and never surfaces signing
+secrets.
 
 The endpoints table shows each registered target with its per-endpoint config at a glance —
 ordering, rate limit, and circuit-breaker state (here `ep_orders` runs a rate limit *and* a
@@ -205,9 +206,10 @@ endpoint can use any combination.
 
 ![Hookline dashboard — endpoints](./docs/dashboard-endpoints.png)
 
-Recent deliveries are grouped by tenant, so you can see fair scheduling at work: a noisy tenant's
-backlog doesn't push another tenant's events down the queue. Each row links to its full
-per-attempt history.
+Recent deliveries are listed newest-first with the owning tenant on each row, so you can see
+which tenant each event belongs to and how many attempts it took. (Fair scheduling itself is
+enforced at delivery time by the coordinator DO — it's a scheduling property, not something
+this table renders.) Each row links to its full per-attempt history.
 
 ![Hookline dashboard — recent deliveries](./docs/dashboard-deliveries.png)
 
@@ -224,6 +226,12 @@ Two Workers (`hookline-api`, `hookline-dashboard`) on a shared remote D1.
   both Workers.
 - **Merging to `main`** applies remote D1 migrations, then deploys both Workers — see
   [`.github/workflows/ci.yml`](./.github/workflows/ci.yml).
+- **Custom domains** are pinned in each Worker's config (`api.bandonc.com`,
+  `hookline.bandonc.com`). They're a cosmetic overlay — the `workers.dev` routes stay live
+  alongside them. Each Custom Domain is provisioned once in the Cloudflare dashboard; the
+  config entry is the version-controlled record and reconciles on later deploys. **If you
+  fork this, remove those `routes` entries** (or point them at a zone you own) or the
+  deploy will fail.
 
 Manual deploy:
 
