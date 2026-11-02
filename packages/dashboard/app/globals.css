@@ -1,67 +1,87 @@
+/* Two palettes on one idea. Dark is deep water with a chartreuse lure; light is
+   sun-bleached paper with the same ink. --accent is brand only: state is always
+   carried by ok / wait / bad, so colour never has to mean two things. */
 :root {
   color-scheme: light dark;
 
-  --bg: #fafafa;
-  --surface: #ffffff;
-  --border: #e5e7eb;
-  --fg: #18181b;
-  --muted: #71717a;
-  --link: #2563eb;
+  --bg: #f3efe3;
+  --surface: #fffcf3;
+  --raised: #e9e3d2;
+  --border: #d5ccb6;
+  --fg: #0d2226;
+  --muted: #566763;
+  --link: #0b6a73;
 
-  --ok-bg: #dcfce7;
-  --ok-fg: #166534;
-  --warn-bg: #fef9c3;
-  --warn-fg: #854d0e;
-  --err-bg: #fee2e2;
-  --err-fg: #991b1b;
+  --accent: #c8f031;
+  --on-accent: #0d2226;
 
-  /* Faint row tints — subtler than the badge backgrounds. */
-  --warn-tint: #fffbeb;
-  --err-tint: #fef2f2;
+  --ok: #067a5c;
+  --ok-soft: #d3f0e1;
+  --wait: #955500;
+  --wait-soft: #fbe9c0;
+  --bad: #c22f1b;
+  --bad-soft: #fbdcd3;
 
-  --mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+  --sans: var(--font-body), system-ui, -apple-system, sans-serif;
+  --display: var(--font-display), var(--sans);
+  --mono: var(--font-mono), ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
 }
 
 /* Explicit dark choice. */
 :root[data-theme="dark"] {
-  --bg: #0b0b0e;
-  --surface: #16161a;
-  --border: #2a2a31;
-  --fg: #e7e7ea;
-  --muted: #8b8b94;
-  --link: #6ea8fe;
+  --bg: #071417;
+  --surface: #0e2024;
+  --raised: #17303a;
+  --border: #25444d;
+  --fg: #e9f3ec;
+  --muted: #8eaaa5;
+  --link: #7fdcdc;
 
-  --ok-bg: #14321f;
-  --ok-fg: #86efac;
-  --warn-bg: #3a300f;
-  --warn-fg: #fde047;
-  --err-bg: #3a1515;
-  --err-fg: #fca5a5;
-
-  --warn-tint: #211c0a;
-  --err-tint: #241314;
+  --ok: #4fe0b0;
+  --ok-soft: #123a33;
+  --wait: #ffc24b;
+  --wait-soft: #3d3116;
+  --bad: #ff8066;
+  --bad-soft: #43221f;
 }
 
 /* System preference, unless the user explicitly chose light. */
 @media (prefers-color-scheme: dark) {
   :root:not([data-theme="light"]) {
-    --bg: #0b0b0e;
-    --surface: #16161a;
-    --border: #2a2a31;
-    --fg: #e7e7ea;
-    --muted: #8b8b94;
-    --link: #6ea8fe;
+    --bg: #071417;
+    --surface: #0e2024;
+    --raised: #17303a;
+    --border: #25444d;
+    --fg: #e9f3ec;
+    --muted: #8eaaa5;
+    --link: #7fdcdc;
 
-    --ok-bg: #14321f;
-    --ok-fg: #86efac;
-    --warn-bg: #3a300f;
-    --warn-fg: #fde047;
-    --err-bg: #3a1515;
-    --err-fg: #fca5a5;
-
-    --warn-tint: #211c0a;
-    --err-tint: #241314;
+    --ok: #4fe0b0;
+    --ok-soft: #123a33;
+    --wait: #ffc24b;
+    --wait-soft: #3d3116;
+    --bad: #ff8066;
+    --bad-soft: #43221f;
   }
+}
+
+/* Set data-tone on any element and its styles can use --tone / --tone-soft.
+   Global because CSS Modules only accept selectors with a local class. */
+[data-tone="ok"] {
+  --tone: var(--ok);
+  --tone-soft: var(--ok-soft);
+}
+[data-tone="wait"] {
+  --tone: var(--wait);
+  --tone-soft: var(--wait-soft);
+}
+[data-tone="bad"] {
+  --tone: var(--bad);
+  --tone-soft: var(--bad-soft);
+}
+[data-tone="quiet"] {
+  --tone: var(--muted);
+  --tone-soft: var(--raised);
 }
 
 * {
@@ -72,7 +92,7 @@ body {
   margin: 0;
   background: var(--bg);
   color: var(--fg);
-  font-family: system-ui, -apple-system, sans-serif;
+  font-family: var(--sans);
   font-size: 14px;
   line-height: 1.5;
 }
@@ -83,4 +103,9 @@ a {
 }
 a:hover {
   text-decoration: underline;
+}
+
+:focus-visible {
+  outline: 2px solid var(--link);
+  outline-offset: 2px;
 }

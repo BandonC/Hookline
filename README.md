@@ -199,17 +199,17 @@ A read-only view of delivery state. It's gated by HTTP Basic Auth (off in the se
 demo — see Security model), reads the same D1 the API writes, and never surfaces signing
 secrets.
 
-The endpoints table shows each registered target with its per-endpoint config at a glance —
-ordering, rate limit, and circuit-breaker state (here `ep_orders` runs a rate limit *and* a
-breaker, while `ep_analytics` is tripped **Open** after failing). These features compose; an
-endpoint can use any combination.
+Each registered target gets a card that says what it's doing in plain English, with its tenant
+and per-endpoint config alongside — ordering, rate limit, and circuit breaker (here `ep_orders`
+runs a rate limit *and* a breaker, while `ep_analytics` shows **Breaker open** after failing).
+These features compose; an endpoint can use any combination.
 
 ![Hookline dashboard — endpoints](./docs/dashboard-endpoints.png)
 
-Recent deliveries are listed newest-first with the owning tenant on each row, so you can see
-which tenant each event belongs to and how many attempts it took. (Fair scheduling itself is
-enforced at delivery time by the coordinator DO — it's a scheduling property, not something
-this table renders.) Each row links to its full per-attempt history.
+Recent deliveries are listed newest-first, each saying what happened and how many attempts it
+used. (Fair scheduling itself is enforced at delivery time by the coordinator DO — it's a
+scheduling property, not something this table renders.) Each row links to the event's full
+delivery timeline.
 
 ![Hookline dashboard — recent deliveries](./docs/dashboard-deliveries.png)
 
@@ -217,6 +217,12 @@ The Dead Letters page surfaces events that exhausted their retries — at-least-
 land here with a final error rather than being silently dropped.
 
 ![Hookline dashboard — dead letters](./docs/dashboard-dead-letters.png)
+
+Each event has its own delivery timeline: when it was received, every attempt with its result
+and latency, and how it ended. (In the public demo, receiver response text shows as `[redacted]`;
+see Security model.)
+
+![Hookline dashboard — event delivery timeline](./docs/dashboard-event.png)
 
 ## Deployment
 
