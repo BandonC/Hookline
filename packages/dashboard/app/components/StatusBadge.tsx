@@ -1,11 +1,10 @@
+import type { Tone } from "@/lib/narrate";
 import styles from "./ui.module.css";
 
-const variant: Record<string, string> = {
-  pending: styles.badgePending,
-  delivered: styles.badgeDelivered,
-  failed: styles.badgeFailed,
-};
-
-export function StatusBadge({ status }: { status: "pending" | "delivered" | "failed" }) {
-  return <span className={`${styles.badge} ${variant[status]}`}>{status}</span>;
+export function StatusBadge({ tone, label }: { tone: Tone; label: string }) {
+  return (
+    <span className={styles.badge} data-tone={tone}>
+      {label}
+    </span>
+  );
 }

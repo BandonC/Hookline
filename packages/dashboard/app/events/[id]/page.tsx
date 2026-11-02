@@ -1,7 +1,9 @@
 import Link from "next/link";
 import { notFound } from "next/navigation";
 import { eventWithAttempts } from "@/lib/queries";
-import { fmtTime } from "@/lib/format";
+import { fmtDuration, fmtTime } from "@/lib/format";
+import { describeEvent } from "@/lib/narrate";
+import { LiveRefresh } from "@/app/components/LiveRefresh";
 import { StatusBadge } from "@/app/components/StatusBadge";
 import styles from "@/app/components/ui.module.css";
 
@@ -11,7 +13,11 @@ export default async function EventDetail({ params }: { params: Promise<{ id: st
   const { id } = await params;
   const data = await eventWithAttempts(id);
   if (!data) notFound();
-  const { event, attempts, blockedBy } = data;
+  const { event, attempts, blockedBy, deadLetter } = data;
+
+  const now = Date.now();
+  const attemptsMade = attempts.at(-1)?.attemptNumber ?? 0;
+  const story = describeEvent({ ...event, attemptsMade }, now);
 
   return (
     <>
@@ -19,136 +25,113 @@ export default async function EventDetail({ params }: { params: Promise<{ id: st
         <Link href="/">← Overview</Link>
       </p>
 
-      <section className={styles.section}>
-        <h2 className={styles.h2}>Event</h2>
-        <div className={styles.metaGrid}>
-          <div>
-            <span className={styles.muted}>ID</span>
-            <div className={styles.mono}>{event.id}</div>
-          </div>
-          <div>
-            <span className={styles.muted}>Endpoint</span>
-            <div className={styles.mono}>{event.endpointId}</div>
-          </div>
-          <div>
-            <span className={styles.muted}>Status</span>
-            <div>
-              <StatusBadge status={event.status} />
-              {event.status === "pending" && event.lastDeferReason === "rate_limited" ? (
-                <>
-                  {" "}
-                  <span className={`${styles.badge} ${styles.badgeThrottled}`}>throttled</span>
-                </>
-              ) : null}
-              {event.status === "pending" && event.lastDeferReason === "breaker_open" ? (
-                <>
-                  {" "}
-                  <span className={`${styles.badge} ${styles.badgeFailed}`}>breaker open</span>
-                </>
-              ) : null}
-            </div>
-          </div>
-          <div>
-            <span className={styles.muted}>Attempts</span>
-            <div>{event.attemptCount}</div>
-          </div>
-          <div>
-            <span className={styles.muted}>Next attempt</span>
-            <div>{fmtTime(event.nextAttemptAt)}</div>
-          </div>
-          <div>
-            <span className={styles.muted}>Ordering key</span>
-            <div>
-              {event.orderingKey !== null ? (
-                <span className={styles.mono}>{event.orderingKey}</span>
-              ) : (
-                <span className={styles.muted}>—</span>
-              )}
-            </div>
-          </div>
-          <div>
-            <span className={styles.muted}>Queue position</span>
-            <div>
-              {event.orderingKey === null ? (
-                <span className={styles.muted}>—</span>
-              ) : blockedBy !== null ? (
-                <>
-                  blocked behind{" "}
-                  <Link className={styles.mono} href={`/events/${blockedBy.id}`}>
-                    {blockedBy.id}
-                  </Link>
-                </>
-              ) : event.status === "pending" ? (
-                <span className={styles.muted}>head of queue</span>
-              ) : (
-                <span className={styles.muted}>—</span>
-              )}
-            </div>
-          </div>
-          <div>
-            <span className={styles.muted}>Created</span>
-            <div>{fmtTime(event.createdAt)}</div>
-          </div>
+      <section className={styles.hero} data-tone={story.tone}>
+        <div className={styles.heroTop}>
+          <h1 className={`${styles.eyebrow} ${styles.mono}`}>{event.id}</h1>
+          {event.status === "pending" ? <LiveRefresh renderedAt={now} /> : null}
         </div>
+        <div className={styles.verdict}>
+          <StatusBadge tone={story.tone} label={story.label} />
+          <p className={styles.headlineSmall}>{story.detail}</p>
+        </div>
+        {blockedBy !== null ? (
+          <p className={styles.heroNote}>
+            Behind{" "}
+            <Link className={styles.mono} href={`/events/${blockedBy.id}`}>
+              {blockedBy.id}
+            </Link>{" "}
+            in its ordered queue.
+          </p>
+        ) : null}
       </section>
 
-      <section className={styles.section}>
-        <h2 className={styles.h2}>Attempt history</h2>
-        {attempts.length === 0 ? (
-          <p className={styles.empty}>No attempts recorded yet.</p>
-        ) : (
-          <div className={styles.card}>
-            <div className={styles.tableScroll}>
-              <table className={styles.table}>
-                <caption className={styles.srOnly}>Delivery attempts for {event.id}</caption>
-                <thead>
-                  <tr>
-                    <th className={styles.num}>#</th>
-                    <th>Status code</th>
-                    <th className={styles.num}>Latency</th>
-                    <th>Response snippet</th>
-                    <th>At</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {attempts.map((a) => {
-                    const ok = a.statusCode != null && a.statusCode >= 200 && a.statusCode < 300;
-                    return (
-                      <tr key={a.id}>
-                        <td className={styles.num}>{a.attemptNumber}</td>
-                        <td>
-                          {a.statusCode != null ? (
-                            <span className={ok ? styles.codeOk : styles.codeErr}>
-                              {a.statusCode}
-                            </span>
-                          ) : (
-                            <span className={styles.muted}>network error</span>
-                          )}
-                        </td>
-                        <td className={styles.num}>
-                          {a.latencyMs != null ? (
-                            `${a.latencyMs} ms`
-                          ) : (
-                            <span className={styles.muted}>—</span>
-                          )}
-                        </td>
-                        <td className={styles.snippet}>
-                          {a.responseSnippet ? (
-                            <code>{a.responseSnippet}</code>
-                          ) : (
-                            <span className={styles.muted}>—</span>
-                          )}
-                        </td>
-                        <td className={styles.muted}>{fmtTime(a.attemptedAt)}</td>
-                      </tr>
-                    );
-                  })}
-                </tbody>
-              </table>
+      <div className={styles.detailGrid}>
+        <section className={styles.section}>
+          <h2 className={styles.h2}>Delivery timeline</h2>
+          <ol className={styles.timeline}>
+            <li data-tone="quiet">
+              <div className={styles.timelineHead}>
+                <strong>Received</strong>
+                <span className={styles.muted} title={fmtTime(event.createdAt)}>
+                  {fmtDuration(now - event.createdAt.getTime())} ago
+                </span>
+              </div>
+            </li>
+            {attempts.map((a, i) => {
+              const ok = a.statusCode != null && a.statusCode >= 200 && a.statusCode < 300;
+              const previous = i === 0 ? event.createdAt : attempts[i - 1].attemptedAt;
+              return (
+                <li key={a.id} data-tone={ok ? "ok" : "bad"}>
+                  <div className={styles.timelineHead}>
+                    <strong>
+                      Attempt {a.attemptNumber}:{" "}
+                      {a.statusCode != null ? `HTTP ${a.statusCode}` : "network error"}
+                    </strong>
+                    <span className={styles.muted} title={fmtTime(a.attemptedAt)}>
+                      {fmtDuration(a.attemptedAt.getTime() - previous.getTime())} later
+                      {a.latencyMs != null ? ` · ${a.latencyMs} ms` : ""}
+                    </span>
+                  </div>
+                  {a.responseSnippet ? <code className={styles.snippet}>{a.responseSnippet}</code> : null}
+                </li>
+              );
+            })}
+            {event.status === "pending" ? (
+              <li data-tone={story.tone} data-open="true">
+                <div className={styles.timelineHead}>
+                  <strong>{story.label}</strong>
+                  <span className={styles.muted} title={fmtTime(event.nextAttemptAt)}>
+                    Next: {fmtTime(event.nextAttemptAt)}
+                  </span>
+                </div>
+              </li>
+            ) : null}
+            {deadLetter !== null ? (
+              <li data-tone="bad">
+                <div className={styles.timelineHead}>
+                  <strong>Moved to dead letters</strong>
+                  <span className={styles.muted} title={fmtTime(deadLetter.failedAt)}>
+                    {fmtDuration(now - deadLetter.failedAt.getTime())} ago
+                  </span>
+                </div>
+                {deadLetter.finalError ? (
+                  <code className={styles.snippet}>{deadLetter.finalError}</code>
+                ) : null}
+              </li>
+            ) : null}
+          </ol>
+        </section>
+
+        <section className={styles.section}>
+          <h2 className={styles.h2}>Details</h2>
+          <dl className={styles.metaList}>
+            <div>
+              <dt>Endpoint</dt>
+              <dd className={styles.mono}>{event.endpointId}</dd>
             </div>
-          </div>
-        )}
-      </section>
+            <div>
+              <dt>Ordering key</dt>
+              <dd className={event.orderingKey !== null ? styles.mono : styles.muted}>
+                {event.orderingKey ?? "—"}
+              </dd>
+            </div>
+            <div>
+              <dt>Queue position</dt>
+              <dd className={styles.muted}>
+                {event.orderingKey === null || event.status !== "pending"
+                  ? "—"
+                  : blockedBy !== null
+                    ? "Blocked"
+                    : "Head of queue"}
+              </dd>
+            </div>
+            <div>
+              <dt>Created</dt>
+              <dd>{fmtTime(event.createdAt)}</dd>
+            </div>
+          </dl>
+        </section>
+      </div>
     </>
   );
 }

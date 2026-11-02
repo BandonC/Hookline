@@ -1,31 +1,50 @@
+/* ── Shell ─────────────────────────────────────────────────────────────── */
+
 .header {
   display: flex;
   align-items: center;
   justify-content: space-between;
+  gap: 16px;
   padding: 0 24px;
-  height: 56px;
+  height: 60px;
   border-bottom: 1px solid var(--border);
   background: var(--surface);
 }
 .brand {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  font-family: var(--display);
   font-weight: 700;
-  font-size: 16px;
+  font-size: 19px;
+  letter-spacing: -0.02em;
   color: var(--fg);
 }
 .brand:hover {
   text-decoration: none;
+}
+.brand img {
+  display: block;
 }
 .nav {
   display: flex;
   align-items: center;
   gap: 20px;
 }
+.nav a {
+  color: var(--muted);
+}
+.nav a.navActive {
+  color: var(--fg);
+  font-weight: 600;
+  box-shadow: 0 2px 0 var(--accent);
+}
 
 .toggle {
   border: 1px solid var(--border);
   background: var(--bg);
   color: var(--fg);
-  border-radius: 6px;
+  border-radius: 8px;
   width: 32px;
   height: 32px;
   cursor: pointer;
@@ -37,131 +56,227 @@
 }
 
 .container {
-  max-width: 1280px;
+  max-width: 1200px;
   margin: 0 auto;
   padding: 28px 24px 64px;
 }
 
+/* ── Right-now panel ───────────────────────────────────────────────────── */
+
+.hero {
+  position: relative;
+  overflow: hidden;
+  margin-bottom: 36px;
+  padding: 24px 28px 28px;
+  border: 1px solid var(--border);
+  border-radius: 16px;
+  background: linear-gradient(115deg, var(--tone-soft), var(--surface) 62%);
+}
+.heroTop {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 16px;
+}
+.eyebrow {
+  margin: 0;
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--muted);
+  overflow-wrap: anywhere;
+}
+.eyebrow.mono {
+  letter-spacing: 0;
+  text-transform: none;
+}
+.headline {
+  margin: 8px 0 14px;
+  font-family: var(--display);
+  font-size: clamp(30px, 5vw, 46px);
+  font-weight: 700;
+  line-height: 1.08;
+  letter-spacing: -0.03em;
+}
+.headlineSmall {
+  margin: 0;
+  font-family: var(--display);
+  font-size: clamp(20px, 3vw, 28px);
+  font-weight: 600;
+  line-height: 1.2;
+  letter-spacing: -0.02em;
+}
+.verdict {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 10px;
+  margin-top: 12px;
+}
+/* The panel behind this badge is already tinted its tone, so it needs an edge. */
+.verdict .badge {
+  background: var(--surface);
+  box-shadow: inset 0 0 0 1px var(--tone);
+}
+.heroNote {
+  max-width: 72ch;
+  margin: 12px 0 0;
+}
+.heroItems {
+  list-style: none;
+  margin: 0 0 24px;
+  padding: 0;
+  display: grid;
+  gap: 4px;
+}
+.heroItems li {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  font-size: 15px;
+}
+.heroItems li::before {
+  content: "";
+  flex: none;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--tone);
+  transform: translateY(-1px);
+}
+
+.live {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  flex: none;
+  font-size: 12px;
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+}
+.liveDot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--ok);
+  animation: pulse 2.4s ease-in-out infinite;
+}
+@keyframes pulse {
+  50% {
+    opacity: 0.3;
+  }
+}
+
+/* ── The delivery line ─────────────────────────────────────────────────── */
+
+.flow {
+  display: grid;
+  grid-template-columns: auto minmax(28px, 1fr) auto minmax(72px, 1.4fr) auto;
+  /* Fixed rows: the fork SVG fills them, and left to size itself its 1:1
+     viewBox would stretch the rows instead. */
+  grid-template-rows: 48px 48px;
+  align-items: center;
+  row-gap: 10px;
+  --line: var(--muted);
+}
+.station {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  min-width: 132px;
+  padding: 8px 14px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--surface);
+  color: var(--fg);
+}
+.station[data-tone] {
+  border-color: var(--tone);
+}
+.station strong {
+  font-family: var(--display);
+  font-size: 24px;
+  line-height: 1.1;
+  font-variant-numeric: tabular-nums;
+}
+.station[data-tone] strong {
+  color: var(--tone);
+}
+.station span {
+  font-size: 12px;
+  color: var(--muted);
+}
+a.station:hover {
+  text-decoration: none;
+  background: var(--tone-soft);
+}
+.stationReceived {
+  grid-area: 1 / 1;
+}
+.stationWaiting {
+  grid-area: 1 / 3;
+}
+.stationDelivered {
+  grid-area: 1 / 5;
+}
+.stationDead {
+  grid-area: 2 / 5;
+}
+.flowIn {
+  grid-area: 1 / 2;
+  width: 100%;
+  height: 10px;
+}
+.flowFork {
+  grid-area: 1 / 4 / 3 / 5;
+  width: 100%;
+  height: 100%;
+}
+.flowIn path,
+.flowFork path {
+  fill: none;
+  stroke: var(--line);
+  stroke-width: 2;
+  stroke-dasharray: 2 6;
+  stroke-linecap: round;
+}
+.flowFork path[data-branch="ok"] {
+  stroke: var(--ok);
+}
+.flowFork path[data-branch="bad"] {
+  stroke: var(--bad);
+}
+.flow[data-moving="true"] path {
+  animation: travel 0.9s linear infinite;
+}
+@keyframes travel {
+  to {
+    stroke-dashoffset: -8;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .liveDot,
+  .flow[data-moving="true"] path {
+    animation: none;
+  }
+}
+
+/* ── Sections ──────────────────────────────────────────────────────────── */
+
 .section {
   margin-bottom: 36px;
+  min-width: 0;
 }
 .h2 {
   font-size: 13px;
+  font-weight: 600;
   text-transform: uppercase;
   letter-spacing: 0.06em;
   color: var(--muted);
   margin: 0 0 12px;
 }
-
-.card {
-  border: 1px solid var(--border);
-  border-radius: 10px;
-  background: var(--surface);
-  overflow: hidden;
-}
-
-.table {
-  width: 100%;
-  border-collapse: collapse;
-}
-.table th {
-  text-align: left;
-  font-weight: 600;
-  font-size: 12px;
-  color: var(--muted);
-  padding: 10px 14px;
-  border-bottom: 1px solid var(--border);
-  white-space: nowrap;
-}
-.table td {
-  padding: 11px 14px;
-  border-bottom: 1px solid var(--border);
-  vertical-align: top;
-}
-.table tbody tr:last-child td {
-  border-bottom: none;
-}
-.table tbody tr:hover {
-  background: var(--bg);
-}
-
-.mono {
-  font-family: var(--mono);
-  font-size: 12.5px;
-}
-.muted {
-  color: var(--muted);
-}
-.empty {
-  color: var(--muted);
-  padding: 8px 2px;
-}
-.back {
-  margin: 0 0 20px;
-}
-
-.badge {
-  display: inline-block;
-  padding: 2px 8px;
-  border-radius: 999px;
-  font-size: 12px;
-  font-weight: 600;
-  text-transform: capitalize;
-}
-.badgePending {
-  background: var(--warn-bg);
-  color: var(--warn-fg);
-}
-.badgeDelivered {
-  background: var(--ok-bg);
-  color: var(--ok-fg);
-}
-.badgeFailed {
-  background: var(--err-bg);
-  color: var(--err-fg);
-}
-.badgeOrdered {
-  background: var(--bg);
-  color: var(--fg);
-  border: 1px solid var(--border);
-}
-.badgeThrottled {
-  background: var(--warn-bg);
-  color: var(--warn-fg);
-  border: 1px solid var(--warn-fg);
-}
-
-.metaGrid {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
-  gap: 16px;
-  border: 1px solid var(--border);
-  border-radius: 10px;
-  background: var(--surface);
-  padding: 18px;
-}
-.metaGrid > div > span {
-  display: block;
-  font-size: 12px;
-  margin-bottom: 3px;
-}
-
-.snippet {
-  max-width: 360px;
-}
-.snippet code {
-  font-family: var(--mono);
-  font-size: 12px;
-  word-break: break-word;
-  white-space: pre-wrap;
-}
-
-.h1 {
-  font-size: 20px;
-  font-weight: 700;
-  margin: 0 0 24px;
-}
-
 /* Section label on the left, a muted at-a-glance count on the right. */
 .sectionHead {
   display: flex;
@@ -180,27 +295,112 @@
   white-space: nowrap;
 }
 
-/* Long values (URLs, ids) stay on one line; the full value is in the title. */
-.truncate {
-  display: inline-block;
-  max-width: 280px;
+.card {
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: var(--surface);
+  overflow: hidden;
+}
+
+/* ── Endpoint cards ────────────────────────────────────────────────────── */
+
+.endpointGrid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(min(100%, 340px), 1fr));
+  gap: 14px;
+}
+.endpoint {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  min-width: 0;
+  padding: 16px 18px;
+  border: 1px solid var(--border);
+  border-left: 4px solid var(--tone);
+  border-radius: 12px;
+  background: var(--surface);
+}
+.endpointHead {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+.endpointHead h3 {
+  margin: 0;
+  font-family: var(--display);
+  font-size: 16px;
+  font-weight: 600;
+  line-height: 1.3;
+  letter-spacing: -0.01em;
+  min-width: 0;
+}
+.endpointStory {
+  margin: 0;
+}
+.endpointUrl {
+  margin: 0;
+  color: var(--muted);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  vertical-align: bottom;
+}
+.meter {
+  display: flex;
+  gap: 2px;
+  height: 6px;
+  border-radius: 3px;
+  overflow: hidden;
+}
+.meter span {
+  flex-basis: 0;
+  background: var(--tone);
+}
+.tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: auto;
+}
+.tag {
+  padding: 1px 7px;
+  border-radius: 6px;
+  background: var(--raised);
+  color: var(--muted);
+  font-family: var(--mono);
+  font-size: 11.5px;
 }
 
-/* Right-align numeric columns (header included) for easy scanning. */
-.table th.num,
-.table td.num {
-  text-align: right;
-  font-variant-numeric: tabular-nums;
-}
+/* ── Tables ────────────────────────────────────────────────────────────── */
 
-/* A non-zero pending count is the thing you're scanning for — make it read. */
-.hot {
-  color: var(--warn-fg);
+.table {
+  width: 100%;
+  border-collapse: collapse;
+}
+.table th {
+  text-align: left;
   font-weight: 600;
+  font-size: 12px;
+  color: var(--muted);
+  padding: 10px 14px;
+  border-bottom: 1px solid var(--border);
+  white-space: nowrap;
+}
+.table td {
+  padding: 11px 14px;
+  border-bottom: 1px solid var(--border);
+  vertical-align: middle;
+  white-space: nowrap;
+}
+.table tbody tr:last-child td {
+  border-bottom: none;
+}
+.table tbody tr:hover {
+  background: var(--raised);
+}
+.table td.storyCell {
+  min-width: 260px;
+  white-space: normal;
 }
 
 /* Tables scroll sideways on narrow viewports instead of breaking the layout. */
@@ -208,29 +408,240 @@
   overflow-x: auto;
 }
 
-/* Surface the rows that need attention. Defined after the :hover rule so the
-   tint persists while hovering a failed/pending row. */
-.table tbody tr.rowFailed {
-  background: var(--err-tint);
+/* Surface the rows that need attention with a marker on the leading edge. */
+.table tbody tr.rowFailed td:first-child {
+  box-shadow: inset 3px 0 0 var(--bad);
 }
-.table tbody tr.rowPending {
-  background: var(--warn-tint);
-}
-
-/* Status codes in attempt history: 2xx reads as success, everything else as error. */
-.codeOk {
-  color: var(--ok-fg);
-  font-weight: 600;
-}
-.codeErr {
-  color: var(--err-fg);
-  font-weight: 600;
+.table tbody tr.rowPending td:first-child {
+  box-shadow: inset 3px 0 0 var(--wait);
 }
 
-/* Current page in the nav. */
-.navActive {
-  color: var(--fg);
+.mono {
+  font-family: var(--mono);
+  font-size: 12.5px;
+}
+.muted {
+  color: var(--muted);
+}
+.empty {
+  color: var(--muted);
+  padding: 8px 2px;
+}
+.back {
+  margin: 0 0 20px;
+}
+
+/* Long values (URLs, ids) stay on one line; the full value is in the title. */
+.truncate {
+  display: inline-block;
+  max-width: 220px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  vertical-align: bottom;
+}
+
+.badge {
+  display: inline-block;
+  flex: none;
+  padding: 2px 9px;
+  border-radius: 999px;
+  background: var(--tone-soft);
+  color: var(--tone);
+  font-size: 12px;
   font-weight: 600;
+  white-space: nowrap;
+}
+
+.pips {
+  display: inline-flex;
+  gap: 3px;
+  vertical-align: middle;
+}
+.pip {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  border: 1.5px solid var(--border);
+}
+.pip[data-state="failed"] {
+  border-color: var(--bad);
+  background: var(--bad);
+}
+.pip[data-state="ok"] {
+  border-color: var(--ok);
+  background: var(--ok);
+}
+
+/* ── Dead letters ──────────────────────────────────────────────────────── */
+
+.groupTitle {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 2px 10px;
+  min-width: 0;
+}
+.groupTitle h2 {
+  margin: 0;
+  font-family: var(--display);
+  font-size: 18px;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+}
+.groupTitle span {
+  color: var(--muted);
+}
+.causes {
+  list-style: none;
+  margin: 0 0 12px;
+  padding: 0;
+  display: grid;
+  gap: 4px;
+}
+.causes li {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 2px 10px;
+}
+.causes strong {
+  color: var(--bad);
+  font-weight: 600;
+}
+
+/* ── Event detail ──────────────────────────────────────────────────────── */
+
+.detailGrid {
+  display: grid;
+  grid-template-columns: minmax(0, 2fr) minmax(0, 1fr);
+  gap: 28px;
+}
+.timeline {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+.timeline li {
+  position: relative;
+  padding: 0 0 20px 26px;
+}
+/* The line itself: a thread running through every step but the last. */
+.timeline li::before {
+  content: "";
+  position: absolute;
+  left: 5px;
+  top: 8px;
+  bottom: -8px;
+  border-left: 2px dotted var(--border);
+}
+.timeline li:last-child {
+  padding-bottom: 0;
+}
+.timeline li:last-child::before {
+  display: none;
+}
+.timeline li::after {
+  content: "";
+  position: absolute;
+  left: 0;
+  top: 5px;
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  background: var(--tone);
+}
+.timeline li[data-open="true"]::after {
+  background: var(--bg);
+  border: 2px solid var(--tone);
+}
+.timelineHead {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 2px 16px;
+}
+.timelineHead strong {
+  font-weight: 600;
+}
+.snippet {
+  display: block;
+  margin-top: 6px;
+  padding: 8px 10px;
+  border-radius: 8px;
+  background: var(--raised);
+  font-family: var(--mono);
+  font-size: 12px;
+  word-break: break-word;
+  white-space: pre-wrap;
+}
+.metaList {
+  margin: 0;
+  padding: 4px 16px;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: var(--surface);
+}
+.metaList > div {
+  padding: 10px 0;
+  border-bottom: 1px solid var(--border);
+}
+.metaList > div:last-child {
+  border-bottom: none;
+}
+.metaList dt {
+  font-size: 12px;
+  color: var(--muted);
+}
+.metaList dd {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
+/* ── Small screens ─────────────────────────────────────────────────────── */
+
+@media (max-width: 760px) {
+  .header {
+    padding: 0 16px;
+  }
+  .container {
+    padding: 20px 16px 48px;
+  }
+  .hero {
+    padding: 20px 18px 20px;
+  }
+  /* The drawn line needs width; below this the stations stand alone. */
+  .flow {
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+    grid-template-rows: auto auto;
+    gap: 8px;
+  }
+  .flowIn,
+  .flowFork {
+    display: none;
+  }
+  .station {
+    min-width: 0;
+    flex-wrap: wrap;
+    gap: 0 8px;
+  }
+  .stationReceived {
+    grid-area: 1 / 1;
+  }
+  .stationWaiting {
+    grid-area: 1 / 2;
+  }
+  .stationDelivered {
+    grid-area: 2 / 1;
+  }
+  .stationDead {
+    grid-area: 2 / 2;
+  }
+  .detailGrid {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 0;
+  }
 }
 
 /* Visually hidden, still read by screen readers (for table <caption>s). */
