@@ -34,10 +34,12 @@ export function DeliveryLine({
         preserveAspectRatio="none"
         aria-hidden="true"
       >
-        <path d="M0 25 H30" vectorEffect="non-scaling-stroke" />
-        <path d="M30 25 H100" data-branch="ok" vectorEffect="non-scaling-stroke" />
+        {/* y values are the two row centres: rows are 48px with a 10px gap, so
+            the fork is 106px tall and they fall at 24/106 and 82/106. */}
+        <path d="M0 22.6 H30" vectorEffect="non-scaling-stroke" />
+        <path d="M30 22.6 H100" data-branch="ok" vectorEffect="non-scaling-stroke" />
         <path
-          d="M30 25 C55 25 55 75 80 75 H100"
+          d="M30 22.6 C55 22.6 55 77.4 80 77.4 H100"
           data-branch="bad"
           vectorEffect="non-scaling-stroke"
         />

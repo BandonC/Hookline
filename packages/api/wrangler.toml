@@ -6,10 +6,10 @@ compatibility_flags = ["nodejs_compat"]
 # ── Custom domain ─────────────────────────────────────────────
 # Public hostname for the ingestion API. The workers.dev route stays live
 # alongside this, so the domain is a cosmetic overlay, never load-bearing.
-# The Custom Domain is created once in the Cloudflare dashboard (a deploy token
-# with zone DNS + Workers Routes edit is required to provision one, and the CI
-# token has only Workers Scripts + D1 — hence UI). This entry is the
-# version-controlled record and reconciles on subsequent deploys.
+# The Custom Domain is version-controlled here and reconciles on every deploy,
+# so the CI token needs zone access as well as Workers Scripts + D1: Workers
+# Routes and DNS edit plus Zone read on bandonc.com. Without it the deploy fails
+# here with "No access to the specified resource", after uploading the Worker.
 [[routes]]
 pattern = "api.bandonc.com"
 custom_domain = true
